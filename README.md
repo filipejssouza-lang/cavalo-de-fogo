@@ -86,7 +86,7 @@ O *Projeto Cavalo de Fogo* prova que não precisamos aceitar a obsolescência pr
 ---
 *Escrito e Arquitetado por Filipe (Zeusdin) & Cluster Lupin.*
 
-## 🚀 Produtos & Casos de Uso
+## 🚀 Casos de Uso Reais (Aplicações Práticas)
 O verdadeiro poder dessa arquitetura é que ela não é apenas uma "prova de conceito" teórica; ela é uma infraestrutura edge viável e pronta para produção:
 
 1. **Servidor de Mídia Edge Privado:** Sistema de streaming de vídeo sob demanda, construído em Python, capaz de servir e transcodificar mídias (`ffmpeg`) via HLS diretamente do armazenamento local, integrado a uma malha segura (Tailscale).
