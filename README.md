@@ -90,5 +90,5 @@ O *Projeto Cavalo de Fogo* prova que não precisamos aceitar a obsolescência pr
 O verdadeiro poder dessa arquitetura é que ela não é apenas uma "prova de conceito" teórica; ela é uma infraestrutura edge viável e pronta para produção:
 
 1. **Servidor de Mídia Edge Privado:** Sistema de streaming de vídeo sob demanda, construído em Python, capaz de servir e transcodificar mídias (`ffmpeg`) via HLS diretamente do armazenamento local, integrado a uma malha segura (Tailscale).
-2. **Nó de IA Local (Custo Zero de Inferência):** Hospedagem de modelos LLM (como Llama 3.2 e Gemma 4) operando diretamente na VRAM/LPDDR5 do dispositivo. Alimenta agentes autônomos de programação (AGY CLI) com zero dependência de APIs em nuvem.
+2. **Nó de IA Híbrido (Local & Nuvem):** Hospedagem de modelos LLM open-source (Llama 3.2 e Gemma 4) operando diretamente na VRAM/LPDDR5 com custo zero de inferência. O ambiente também atua como um host ultrarrápido nativo para agentes como o **Antigravity CLI (Google)**, unindo a inteligência da nuvem com o controle do hardware bare-metal.
 3. **Servidor de Computação Gráfica e Cloud Gaming:** Uso de servidores Wayland/Sunshine rodando bare-metal para renderizar motores gráficos de PC (via Vulkan e Box64) e fazer o stream para displays locais com latência quase nula.
