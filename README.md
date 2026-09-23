@@ -85,3 +85,10 @@ O *Projeto Cavalo de Fogo* prova que não precisamos aceitar a obsolescência pr
 
 ---
 *Escrito e Arquitetado por Filipe (Zeusdin) & Cluster Lupin.*
+
+## 🚀 Produtos & Casos de Uso (O que roda no Cavalo de Fogo?)
+O verdadeiro poder dessa arquitetura é que ela não é apenas um experimento; ela já suporta **produtos reais** operando 24/7 na nossa infraestrutura edge:
+
+1. **CavaloFlix 4.0 Cinema Edition:** Um servidor de mídia HTTP em Python/Artplayer (estilo Netflix) que serve filmes e séries transcodificados on-the-fly (`ffmpeg`) diretamente da nuvem privada, totalmente blindado na rede mesh (Tailscale).
+2. **Cluster IA Local (Custo Zero):** Inferência autônoma rodando Llama 3.2 e Gemma 4, alimentando agentes de programação (Antigravity CLI) sem chamadas de API externas. Inteligência de ponta direto no hardware do usuário.
+3. **Estação Gamer de Bolso:** Servidor Sunshine bare-metal enviando a renderização nativa de Vulkan (GTA San Andreas de PC) direto para a tela da sala com latência imperceptível.
