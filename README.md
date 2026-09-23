@@ -86,9 +86,9 @@ O *Projeto Cavalo de Fogo* prova que não precisamos aceitar a obsolescência pr
 ---
 *Escrito e Arquitetado por Filipe (Zeusdin) & Cluster Lupin.*
 
-## 🚀 Produtos & Casos de Uso (O que roda no Cavalo de Fogo?)
-O verdadeiro poder dessa arquitetura é que ela não é apenas um experimento; ela já suporta **produtos reais** operando 24/7 na nossa infraestrutura edge:
+## 🚀 Produtos & Casos de Uso
+O verdadeiro poder dessa arquitetura é que ela não é apenas uma "prova de conceito" teórica; ela é uma infraestrutura edge viável e pronta para produção:
 
-1. **CavaloFlix 4.0 Cinema Edition:** Um servidor de mídia HTTP em Python/Artplayer (estilo Netflix) que serve filmes e séries transcodificados on-the-fly (`ffmpeg`) diretamente da nuvem privada, totalmente blindado na rede mesh (Tailscale).
-2. **Cluster IA Local (Custo Zero):** Inferência autônoma rodando Llama 3.2 e Gemma 4, alimentando agentes de programação (Antigravity CLI) sem chamadas de API externas. Inteligência de ponta direto no hardware do usuário.
-3. **Estação Gamer de Bolso:** Servidor Sunshine bare-metal enviando a renderização nativa de Vulkan (GTA San Andreas de PC) direto para a tela da sala com latência imperceptível.
+1. **Servidor de Mídia Edge Privado:** Sistema de streaming de vídeo sob demanda, construído em Python, capaz de servir e transcodificar mídias (`ffmpeg`) via HLS diretamente do armazenamento local, integrado a uma malha segura (Tailscale).
+2. **Nó de IA Local (Custo Zero de Inferência):** Hospedagem de modelos LLM (como Llama 3.2 e Gemma 4) operando diretamente na VRAM/LPDDR5 do dispositivo. Alimenta agentes autônomos de programação (AGY CLI) com zero dependência de APIs em nuvem.
+3. **Servidor de Computação Gráfica e Cloud Gaming:** Uso de servidores Wayland/Sunshine rodando bare-metal para renderizar motores gráficos de PC (via Vulkan e Box64) e fazer o stream para displays locais com latência quase nula.
