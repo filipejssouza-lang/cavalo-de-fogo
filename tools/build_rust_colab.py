@@ -46,11 +46,12 @@ with open('lupin_mojo_cortex_x1.o', 'wb') as f:
 subprocess.run('aarch64-linux-gnu-ar rcs crates/lupinos-daemon/libmojokernels.a lupin_mojo_cortex_x1.o', shell=True, check=True)
 subprocess.run('cp crates/lupinos-daemon/libmojokernels.a libmojokernels.a', shell=True, check=True)
 
-print('=== 2. Compiling Static lupinos-daemon with Embedded Mojo Kernels ===')
+print('=== 2. Compiling Heterogeneous lupinos-daemon with Dynamic Musl + Static Mojo ===')
 env = os.environ.copy()
 cargo_bin = os.path.expanduser('~/.cargo/bin')
 env['PATH'] = f"{{cargo_bin}}:{{env['PATH']}}"
 env['CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER'] = 'aarch64-linux-gnu-gcc'
+env['RUSTFLAGS'] = '-C target-feature=-crt-static'
 
 cmd = ['cargo', 'build', '--release', '--target', 'aarch64-unknown-linux-musl']
 p = subprocess.run(cmd, env=env, capture_output=True, text=True)
@@ -73,8 +74,8 @@ print('=== Compilation Success! ===')
 with open("/tmp/colab_rust_job.py", "w") as f:
     f.write(colab_script)
 
-print("Dispatching Static Rust Musl + Mojo Compilation Job to Google Colab Forge...")
-res = subprocess.run(["colab-gpu-runner", "--file", "/tmp/colab_rust_job.py", "--gpu", "CPU", "--task", "compile_rust_mojo_daemon"], capture_output=True, text=True)
+print("Dispatching Heterogeneous Rust Musl + Mojo Compilation Job to Google Colab Forge...")
+res = subprocess.run(["colab-gpu-runner", "--file", "/tmp/colab_rust_job.py", "--gpu", "CPU", "--task", "compile_tri_silicon_daemon"], capture_output=True, text=True)
 print(res.stdout)
 if "BEGIN_LUPINOS_DAEMON_B64" in res.stdout:
     b64_data = res.stdout.split("BEGIN_LUPINOS_DAEMON_B64")[1].split("END_LUPINOS_DAEMON_B64")[0].strip()
