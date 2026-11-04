@@ -89,9 +89,12 @@ def inject_guardian_and_repack(ramdisk_gz_path, guardian_bin, work_dir):
                 f.write("    start lupinos_guard\n")
             print("[+] Gatilho de boot configurado no init.recovery.qcom.rc")
             
-    # Reempacota ramdisk_patched.cpio.gz
+    # Garante permissões de root na raiz do ramdisk
+    os.chmod(ramdisk_root, 0o755)
+
+    # Reempacota ramdisk_patched.cpio.gz garantindo root:root e compatibilidade total com o kernel
     out_ramdisk = os.path.join(work_dir, "ramdisk_patched.cpio.gz")
-    cmd = f"find . -mindepth 1 | cpio -o -H newc 2>/dev/null | gzip -9 > '{out_ramdisk}'"
+    cmd = f"find . | cpio -o -H newc -R 0:0 2>/dev/null | gzip -9 > '{out_ramdisk}'"
     subprocess.check_call(cmd, shell=True, cwd=ramdisk_root)
     print(f"[+] Ramdisk v3 reempacotado: {os.path.getsize(out_ramdisk)} bytes")
     return out_ramdisk
