@@ -1,0 +1,9 @@
+[package]
+name = "lupinos-fastrpc"
+version = "0.3.0"
+edition = "2021"
+authors = ["Filipe (Zeusdin)", "Matilha Lupin"]
+description = "Safe sovereign Rust interface for Qualcomm FastRPC (Hexagon 780 cDSP)"
+
+[dependencies]
+libc = "0.2"

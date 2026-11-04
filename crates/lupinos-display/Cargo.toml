@@ -1,0 +1,9 @@
+[package]
+name = "lupinos-display"
+version = "0.3.0"
+edition = "2021"
+authors = ["Filipe (Zeusdin)", "Matilha Lupin"]
+description = "Sovereign Linux DRM/KMS engine for Xiaomi Mi 11 Ultra secondary rear AMOLED display (126x294)"
+
+[dependencies]
+libc = "0.2"

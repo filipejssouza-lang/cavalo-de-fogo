@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/lupinos-fastrpc",
+    "crates/lupinos-display",
+    "crates/lupinos-daemon"
+]
+resolver = "2"

@@ -1,0 +1,11 @@
+[package]
+name = "lupinos-daemon"
+version = "0.3.0"
+edition = "2021"
+authors = ["Filipe (Zeusdin)", "Matilha Lupin"]
+description = "Sovereign LupinOS Hardware Daemon for Xiaomi Mi 11 Ultra"
+
+[dependencies]
+lupinos-fastrpc = { path = "../lupinos-fastrpc" }
+lupinos-display = { path = "../lupinos-display" }
+libc = "0.2"
