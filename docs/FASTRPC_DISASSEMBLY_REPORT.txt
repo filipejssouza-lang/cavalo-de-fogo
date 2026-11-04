@@ -1,0 +1,11 @@
+[34m│[0m   [31m[31m; DATA XREF from sym.__cfi_check @ [31m0x1632c[31m[0m
+[36m┌[0m 4: [31msym.remote_handle_open[0m (int64_t arg1, int64_t arg2);
+[36m│[0m       [34m│[0m   [37m; [37marg [34mint64_t arg1 [36m@ x0[0m
+[36m│[0m       [34m│[0m   [37m; [37marg [34mint64_t arg2 [36m@ x1[0m
+[36m└[0m       [34m└[0m[34m─[0m[34m<[0m [32m0x0003b7b0[0m      [37m87[37m97[31mff[37m17[0m       [32mb[36m [33m0x215cc[0m[0m[31m                   [31m; sym.remote_handle_invoke-0x1a1c4[0m
+        [34m│[0m   [31m[31m; DATA XREF from sym.__cfi_check @ [31m0x168e4[31m[0m
+[36m┌[0m 4: [31msym.rpcmem_alloc[0m (int64_t arg1, int64_t arg2, int64_t arg3);
+[36m│[0m       [34m│[0m   [37m; [37marg [34mint64_t arg1 [36m@ x0[0m
+[36m│[0m       [34m│[0m   [37m; [37marg [34mint64_t arg2 [36m@ x1[0m
+[36m│[0m       [34m│[0m   [37m; [37marg [34mint64_t arg3 [36m@ x2[0m
+[36m└[0m       [34m└[0m[34m─[0m[34m<[0m [32m0x0003b848[0m      [37m97[37mc8[31mff[37m17[0m       [32mb[36m [33m0x2daa4[0m[0m[31m                   [31m; sym.rpcmem_deinit-0xde68[0m
