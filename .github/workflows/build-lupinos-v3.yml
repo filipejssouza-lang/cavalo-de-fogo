@@ -1,0 +1,72 @@
+name: Build & Package Lupin Bare-Metal OS v3
+
+on:
+  push:
+    tags:
+      - 'v*'
+    paths:
+      - 'src/guardian/**'
+      - 'tools/**'
+      - '.github/workflows/build-lupinos-v3.yml'
+  workflow_dispatch:
+    inputs:
+      base_boot_url:
+        description: 'URL direta para download da imagem boot base (opcional)'
+        required: false
+        default: ''
+
+jobs:
+  build-guardian:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Toolchain & Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools python3 cpio gzip curl
+          # Instalar avbtool oficial do AOSP
+          curl -s https://android.googlesource.com/platform/external/avb/+/master/avbtool.py?format=TEXT | base64 -d > avbtool
+          chmod +x avbtool
+          sudo mv avbtool /usr/local/bin/
+
+      - name: Compile Native LupinGuard (Static AArch64)
+        run: |
+          mkdir -p bin
+          aarch64-linux-gnu-gcc -static -O2 -s src/guardian/lupinos_guard.c -o bin/lupinos_guard
+          file bin/lupinos_guard
+          ls -la bin/lupinos_guard
+
+      - name: Verify Build Tools Syntax
+        run: |
+          python3 -m py_compile tools/build_os_v3.py
+          python3 tools/build_os_v3.py --help
+
+      - name: Optional Assemble Full Boot Image
+        if: ${{ inputs.base_boot_url != '' }}
+        run: |
+          curl -L -o base_boot.img "${{ inputs.base_boot_url }}"
+          python3 tools/build_os_v3.py --boot base_boot.img --guardian bin/lupinos_guard --out lupin_baremetal_star_v3.img
+          sha256sum lupin_baremetal_star_v3.img > sha256_image.txt
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lupinos-v3-artifacts
+          path: |
+            bin/lupinos_guard
+            lupin_baremetal_star_v3.img
+            sha256_image.txt
+          if-no-files-found: warn
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            bin/lupinos_guard
+            lupin_baremetal_star_v3.img
+            sha256_image.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
