@@ -83,6 +83,15 @@ Um script (Daemon) no PC principal faz o encaminhamento reverso do ADB, expondo 
 ## 🏆 Conclusão
 O *Projeto Cavalo de Fogo* prova que não precisamos aceitar a obsolescência programada ou os limites comerciais dos sistemas móveis. Com um pouco de "gambiarra de alto nível" e engenharia raiz, um smartphone usado vira um servidor formidável, capaz de rivalizar com hardwares que custam 10x mais.
 
+## 🐺 LupinOS v3: Extreme Silicon Layer
+A versão v3 introduz o **Extreme Silicon Layer**, abandonando stubs de nuvem e focando na integração direta e real com o hardware Qualcomm do Mi 11 Ultra:
+
+- **Hexagon 780 cDSP via FastRPC:** Integração real (`/dev/msm_fastrpc-2`) com as bibliotecas nativas de 64 bits (`libcdsprpc.so`) do diretório `/vendor_real`, com suporte a DMA-BUF (Zero-Copy) para tensores de IA.
+- **Vetorização NEON Cortex-X1:** Kernels matemáticos intensivos (RMSNorm, SwiGLU, e INT8 DotProd) escritos em C com `<arm_neon.h>`, utilizando as instruções ARMv8.4-A Dot Product, fixados nativamente no Core 7 (Cortex-X1 @ 2.84 GHz).
+- **Lupin Native Guardian:** Daemon supervisor bare-metal unificado (em C) encarregado da gestão térmica agressiva (Peltier lock <65C), provisionamento de 12GB de ZRAM, bloqueio de wakelocks USB, montagem sentinela de `/data` e inicialização do ambiente DSP nativo da Qualcomm.
+
+Para mais detalhes sobre a comunicação com o silício, consulte [QUALCOMM_SILICON_ARCHITECTURE.md](docs/QUALCOMM_SILICON_ARCHITECTURE.md).
+
 ---
 *Escrito e Arquitetado por Filipe (Zeusdin) & Cluster Lupin.*
 

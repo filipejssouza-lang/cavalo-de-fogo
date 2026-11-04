@@ -191,12 +191,31 @@ static void thermal_loop() {
     }
 }
 
+// 6. Setup DSP Environment & Start Daemon
+static void setup_dsp_env() {
+    setenv("LD_LIBRARY_PATH", "/vendor_real/lib64", 1);
+    setenv("ADSP_LIBRARY_PATH", "/data/alpine/dsp/cdsp;/vendor_real/lib/rfsa/adsp", 1);
+    
+    struct stat st;
+    if (stat("/dev/msm_fastrpc-2", &st) == 0) {
+        log_kmsg("[LupinGuard] DSP FastRPC detectado, iniciando cdsprpcd...\n");
+        pid_t pid = fork();
+        if (pid == 0) {
+            execl("/vendor_real/bin/cdsprpcd", "cdsprpcd", NULL);
+            exit(1);
+        }
+    } else {
+        log_kmsg("[LupinGuard] AVISO: DSP FastRPC (/dev/msm_fastrpc-2) nao encontrado.\n");
+    }
+}
+
 int main(void) {
     log_kmsg("[LupinGuard] Lupin Bare-Metal OS v3 Guardian Iniciado!\n");
 
     screen_off();
     setup_zram();
     usb_power_lock();
+    setup_dsp_env();
 
     pid_t sentinel_pid = fork();
     if (sentinel_pid == 0) {
