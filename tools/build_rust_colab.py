@@ -10,6 +10,7 @@ files = [
     "crates/lupinos-display/Cargo.toml",
     "crates/lupinos-display/src/lib.rs",
     "crates/lupinos-daemon/Cargo.toml",
+    "crates/lupinos-daemon/build.rs",
     "crates/lupinos-daemon/src/main.rs"
 ]
 
@@ -20,11 +21,16 @@ for f in files:
 
 payload_b64 = base64.b64encode(json.dumps(sources).encode("utf-8")).decode("ascii")
 
+# Also read lupin_mojo_cortex_x1.o
+mojo_obj_path = os.path.join(REPO_ROOT, "build/lupin_mojo_cortex_x1.o")
+with open(mojo_obj_path, "rb") as fh:
+    mojo_obj_b64 = base64.b64encode(fh.read()).decode("ascii")
+
 colab_script = f"""import os, sys, base64, subprocess, json
 
 print('=== 1. Setting up Rustup + Musl AArch64 in Cloud ===')
 subprocess.run('curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target aarch64-unknown-linux-musl', shell=True, check=True)
-subprocess.run('apt-get update -qq && apt-get install -y -qq musl-tools gcc-aarch64-linux-gnu', shell=True, check=True)
+subprocess.run('apt-get update -qq && apt-get install -y -qq musl-tools gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu', shell=True, check=True)
 
 sources = json.loads(base64.b64decode('{payload_b64}').decode('utf-8'))
 for path, code in sources.items():
@@ -32,7 +38,15 @@ for path, code in sources.items():
     with open(path, 'w', encoding='utf-8') as f:
         f.write(code)
 
-print('=== 2. Compiling Static lupinos-daemon for AArch64 Musl ===')
+# Write Mojo object and create static archive libmojokernels.a
+mojo_bytes = base64.b64decode('{mojo_obj_b64}')
+with open('lupin_mojo_cortex_x1.o', 'wb') as f:
+    f.write(mojo_bytes)
+
+subprocess.run('aarch64-linux-gnu-ar rcs crates/lupinos-daemon/libmojokernels.a lupin_mojo_cortex_x1.o', shell=True, check=True)
+subprocess.run('cp crates/lupinos-daemon/libmojokernels.a libmojokernels.a', shell=True, check=True)
+
+print('=== 2. Compiling Static lupinos-daemon with Embedded Mojo Kernels ===')
 env = os.environ.copy()
 cargo_bin = os.path.expanduser('~/.cargo/bin')
 env['PATH'] = f"{{cargo_bin}}:{{env['PATH']}}"
@@ -59,8 +73,8 @@ print('=== Compilation Success! ===')
 with open("/tmp/colab_rust_job.py", "w") as f:
     f.write(colab_script)
 
-print("Dispatching Static Rust Musl Compilation Job to Google Colab Forge...")
-res = subprocess.run(["colab-gpu-runner", "--file", "/tmp/colab_rust_job.py", "--gpu", "CPU", "--task", "compile_rust_musl_daemon"], capture_output=True, text=True)
+print("Dispatching Static Rust Musl + Mojo Compilation Job to Google Colab Forge...")
+res = subprocess.run(["colab-gpu-runner", "--file", "/tmp/colab_rust_job.py", "--gpu", "CPU", "--task", "compile_rust_mojo_daemon"], capture_output=True, text=True)
 print(res.stdout)
 if "BEGIN_LUPINOS_DAEMON_B64" in res.stdout:
     b64_data = res.stdout.split("BEGIN_LUPINOS_DAEMON_B64")[1].split("END_LUPINOS_DAEMON_B64")[0].strip()

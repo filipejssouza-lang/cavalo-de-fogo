@@ -3,7 +3,6 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
 
 pub const REAR_WIDTH: usize = 126;

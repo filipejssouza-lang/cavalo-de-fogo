@@ -37,11 +37,9 @@ pub struct FastRpcInit {
     pub memlen: u32,
 }
 
-// IOCTL Opcode Macros (Linux 'R' type)
-// _IOWR('R', 1, struct fastrpc_invoke)
-const FASTRPC_IOCTL_INVOKE: libc::c_ulong = 0xc0185201;
-// _IOWR('R', 6, struct fastrpc_init)
-const FASTRPC_IOCTL_INIT: libc::c_ulong = 0xc0205206;
+// IOCTL Opcode Macros (Linux 'R' type - cast to c_int for musl compatibility)
+const FASTRPC_IOCTL_INVOKE: libc::c_int = 0xc0185201_u32 as libc::c_int;
+const FASTRPC_IOCTL_INIT: libc::c_int = 0xc0205206_u32 as libc::c_int;
 
 #[derive(Debug)]
 pub enum FastRpcError {

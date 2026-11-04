@@ -1,2 +1,8 @@
-build/
+/build/
 *.o
+/lupinos-daemon
+/bench_extreme
+*.a
+*.so
+tools/libcdsprpc.so
+/target/
