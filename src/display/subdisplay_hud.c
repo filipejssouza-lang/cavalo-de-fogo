@@ -66,6 +66,35 @@ struct drm_mode_fb_dirty_cmd {
 
 #define DRM_IOCTL_MODE_DIRTYFB     _IOWR(DRM_IOCTL_BASE, 0xB1, struct drm_mode_fb_dirty_cmd)
 
+struct drm_mode_modeinfo {
+    uint32_t clock;
+    uint16_t hdisplay, hsync_start, hsync_end, htotal, hskew;
+    uint16_t vdisplay, vsync_start, vsync_end, vtotal, vscan;
+    uint32_t vrefresh, flags, type;
+    char name[32];
+};
+
+struct drm_mode_get_connector {
+    uint64_t encoders_ptr, modes_ptr, props_ptr, prop_values_ptr;
+    uint32_t count_modes, count_props, count_encoders, encoder_id;
+    uint32_t connector_id, connector_type, connector_type_id, connection;
+    uint32_t mm_width, mm_height, subpixel, pad;
+};
+
+struct drm_mode_crtc {
+    uint64_t set_connectors_ptr;
+    uint32_t count_connectors;
+    uint32_t crtc_id;
+    uint32_t fb_id;
+    uint32_t x, y;
+    uint32_t gamma_size;
+    uint32_t mode_valid;
+    struct drm_mode_modeinfo mode;
+};
+
+#define DRM_IOCTL_MODE_GETCONNECTOR _IOWR(DRM_IOCTL_BASE, 0xA7, struct drm_mode_get_connector)
+#define DRM_IOCTL_MODE_SETCRTC     _IOWR(DRM_IOCTL_BASE, 0xA2, struct drm_mode_crtc)
+
 static volatile bool running = true;
 
 void handle_signal(int sig) {
@@ -124,6 +153,38 @@ bool drm_init(drm_fb_t *fb) {
         fprintf(stderr, "[HUD] Warning: ADDFB failed (errno: %d).\n", errno);
     } else {
         fb->fb_id = add_cmd.fb_id;
+    }
+
+    // Bind CRTC 208 to Connector 64 with 126x294 mode
+    struct drm_mode_get_connector conn;
+    memset(&conn, 0, sizeof(conn));
+    conn.connector_id = 64;
+    struct drm_mode_modeinfo mode;
+    memset(&mode, 0, sizeof(mode));
+    conn.modes_ptr = (uint64_t)&mode;
+    conn.count_modes = 1;
+    if (ioctl(fb->fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn) >= 0) {
+        uint32_t conn_id = 64;
+        struct drm_mode_crtc set_crtc;
+        memset(&set_crtc, 0, sizeof(set_crtc));
+        set_crtc.set_connectors_ptr = (uint64_t)&conn_id;
+        set_crtc.count_connectors = 1;
+        set_crtc.crtc_id = 208;
+        set_crtc.fb_id = fb->fb_id;
+        set_crtc.mode_valid = 1;
+        set_crtc.mode = mode;
+        if (ioctl(fb->fd, DRM_IOCTL_MODE_SETCRTC, &set_crtc) >= 0) {
+            printf("[HUD] Bound CRTC 208 to Connector 64 (126x294 @ %uHz)!\n", mode.vrefresh);
+        } else {
+            fprintf(stderr, "[HUD] Warning: SETCRTC failed (errno: %d)\n", errno);
+        }
+    }
+
+    // Ensure rear backlight is at max brightness
+    int bl_fd = open("/sys/class/backlight/panel1-backlight/brightness", O_WRONLY);
+    if (bl_fd >= 0) {
+        write(bl_fd, "255", 3);
+        close(bl_fd);
     }
 
     // Map Dumb Buffer
