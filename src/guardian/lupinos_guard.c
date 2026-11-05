@@ -85,7 +85,10 @@ static void setup_zram() {
             int page_size = sysconf(_SC_PAGESIZE);
             if (page_size <= 0) page_size = 4096;
             
-            char *page = (char *)aligned_alloc(page_size, page_size);
+            char *page = NULL;
+            if (posix_memalign((void **)&page, page_size, page_size) != 0) {
+                page = (char *)malloc(page_size);
+            }
             if (page) {
                 memset(page, 0, page_size);
                 // Swap header v1
@@ -165,7 +168,7 @@ static void sentinel_loop() {
     }
 }
 
-// 5. Thermal Watchdog (Target: keep Peltier-cooled SoC under 65C)
+// 5. Thermal Watchdog (Target: keep Peltier-cooled SoC under 75C under heavy AI workloads)
 static void thermal_loop() {
     while (1) {
         DIR *dir = opendir("/sys/class/thermal");
@@ -178,7 +181,7 @@ static void thermal_loop() {
                     char buf[32] = {0};
                     read_file_to_buf(path, buf, sizeof(buf));
                     int temp = atoi(buf);
-                    if (temp > 65000 || (temp > 65 && temp < 1000)) {
+                    if (temp > 75000 || (temp > 75 && temp < 1000)) {
                         char warn[128];
                         snprintf(warn, sizeof(warn), "[LupinGuard] ALERTA: %s atingiu %d mC!\n", ent->d_name, temp);
                         log_kmsg(warn);
