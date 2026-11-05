@@ -1,10 +1,10 @@
 CC ?= gcc
-CFLAGS = -O3 -static -mcpu=cortex-x1+dotprod -ffast-math -Wall
+CFLAGS = -O3 -static -march=armv8.4-a+dotprod -ffast-math -Wall
 LDFLAGS = -lm -lpthread -ldl
 
-SRC_CPU = src/cpu/neon_kernels.c
-SRC_NPU = src/npu/fastrpc_cdsp.c
-SRC_GUARDIAN = src/guardian/lupinos_guard.c
+SRC_CPU = src/cpu/neon_kernels.c src/cpu/governor_control.c
+SRC_NPU = src/npu/fastrpc_cdsp.c src/npu/fastrpc_npu.c
+SRC_GUARDIAN = src/guardian/lupinos_guard.c src/guardian/net_watchdog.c
 SRC_BENCH = src/bench/bench_extreme.c
 
 OBJ_CPU = $(SRC_CPU:.c=.o)
@@ -12,18 +12,22 @@ OBJ_NPU = $(SRC_NPU:.c=.o)
 OBJ_GUARDIAN = $(SRC_GUARDIAN:.c=.o)
 OBJ_BENCH = $(SRC_BENCH:.c=.o)
 
-TARGETS = build/lupinos_guard build/bench_extreme build/lupin_subdisplay_hud
+TARGETS = build/lupinos_guard build/bench_extreme build/drm_subdisplay build/lupin-power
 
 all: $(TARGETS)
 
 
-hud: build/lupin_subdisplay_hud
+hud: build/drm_subdisplay
 
-build/lupin_subdisplay_hud: src/display/subdisplay_hud.c
+build/drm_subdisplay: src/display/drm_subdisplay.c
 	@mkdir -p build
-	$(CC) -O2 -static -Wall $< -o $@
+	$(CC) -O2 -static -Wall $< -o $@ $(LDFLAGS)
 
-build/lupinos_guard: $(OBJ_GUARDIAN)
+build/lupin-power: src/cpu/lupin_power.c src/cpu/governor_control.c
+	@mkdir -p build
+	$(CC) -O2 -static -Wall $^ -o $@ $(LDFLAGS)
+
+build/lupinos_guard: $(OBJ_GUARDIAN) $(OBJ_NPU)
 	@mkdir -p build
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 

@@ -27,11 +27,12 @@ typedef struct {
     uint32_t height;
     uint32_t stride;
     uint32_t size;
-    uint32_t handle;
-    uint8_t *vaddr;
-    uint32_t fb_id;
+    uint32_t handle[2];
+    uint8_t *vaddr[2];
+    uint32_t fb_id[2];
     uint32_t crtc_id;
     uint32_t conn_id;
+    int back_idx;
 } drm_fb_t;
 
 // Initialize DRM and the framebuffer
