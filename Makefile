@@ -12,9 +12,16 @@ OBJ_NPU = $(SRC_NPU:.c=.o)
 OBJ_GUARDIAN = $(SRC_GUARDIAN:.c=.o)
 OBJ_BENCH = $(SRC_BENCH:.c=.o)
 
-TARGETS = build/lupinos_guard build/bench_extreme
+TARGETS = build/lupinos_guard build/bench_extreme build/lupin_subdisplay_hud
 
 all: $(TARGETS)
+
+
+hud: build/lupin_subdisplay_hud
+
+build/lupin_subdisplay_hud: src/display/subdisplay_hud.c
+	@mkdir -p build
+	$(CC) -O2 -static -Wall $< -o $@
 
 build/lupinos_guard: $(OBJ_GUARDIAN)
 	@mkdir -p build
@@ -31,4 +38,4 @@ clean:
 	rm -rf build
 	rm -f $(OBJ_CPU) $(OBJ_NPU) $(OBJ_GUARDIAN) $(OBJ_BENCH)
 
-.PHONY: all clean
+.PHONY: all clean hud

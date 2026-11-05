@@ -14,7 +14,7 @@ LDFLAGS="-lm -lpthread -ldl"
 
 mkdir -p build
 
-echo "[1/2] Compiling sources..."
+echo "[1/3] Compiling benchmark sources..."
 $CC $CFLAGS \
     src/cpu/neon_kernels.c \
     src/npu/fastrpc_cdsp.c \
@@ -22,7 +22,11 @@ $CC $CFLAGS \
     -o build/bench_extreme \
     $LDFLAGS
 
-echo "[2/2] Build successful: build/bench_extreme"
+
+echo "[2/3] Compiling Native Sub-Display HUD..."
+$CC -O2 -static -Wall src/display/subdisplay_hud.c -o build/lupin_subdisplay_hud
+
+echo "[3/3] Build successful: build/bench_extreme & build/lupin_subdisplay_hud"
 echo "---------------------------------------------------------"
 echo "To run the benchmark on the target hardware:"
 echo "  ./build/bench_extreme"

@@ -27,6 +27,18 @@
 #define ION_IOC_FREE        _IOWR(ION_IOC_MAGIC, 1, struct ion_handle_data)
 #define ION_IOC_SHARE       _IOWR(ION_IOC_MAGIC, 4, struct ion_fd_data)
 
+
+// DMA-HEAP modern ioctl
+#define DMA_HEAP_IOC_MAGIC 'H'
+#define DMA_HEAP_IOCTL_ALLOC _IOWR(DMA_HEAP_IOC_MAGIC, 0, struct dma_heap_allocation_data)
+
+struct dma_heap_allocation_data {
+    uint64_t len;
+    uint32_t fd;
+    uint32_t fd_flags;
+    uint64_t heap_flags;
+};
+
 struct ion_allocation_data {
     size_t len;
     size_t align;
@@ -133,44 +145,65 @@ void fastrpc_cdsp_cleanup(void) {
 }
 
 void* fastrpc_cdsp_alloc_buffer(size_t size, int* fd_out) {
-    if (ion_fd < 0) {
+    int dmabuf_fd = -1;
+
+    // 1. Try modern DMA-HEAP first
+    int heap_fd = open("/dev/dma_heap/system", O_RDWR | O_CLOEXEC);
+    if (heap_fd < 0) {
+        heap_fd = open("/dev/dma_heap/qcom,system", O_RDWR | O_CLOEXEC);
+    }
+
+    if (heap_fd >= 0) {
+        struct dma_heap_allocation_data alloc_data;
+        memset(&alloc_data, 0, sizeof(alloc_data));
+        alloc_data.len = size;
+        alloc_data.fd_flags = O_RDWR | O_CLOEXEC;
+
+        if (ioctl(heap_fd, DMA_HEAP_IOCTL_ALLOC, &alloc_data) == 0) {
+            dmabuf_fd = alloc_data.fd;
+        } else {
+            fprintf(stderr, "[FastRPC] DMA-HEAP allocation failed (errno: %d).\n", errno);
+        }
+        close(heap_fd);
+    }
+
+    // 2. Fallback to legacy ION
+    if (dmabuf_fd < 0 && ion_fd >= 0) {
+        struct ion_allocation_data alloc_data;
+        memset(&alloc_data, 0, sizeof(alloc_data));
+        alloc_data.len = size;
+        alloc_data.align = 4096;
+        alloc_data.heap_id_mask = 1 << 1; // ION_SYSTEM_HEAP_ID or similar
+        alloc_data.flags = 0;
+
+        if (ioctl(ion_fd, ION_IOC_ALLOC, &alloc_data) >= 0) {
+            struct ion_fd_data fd_data;
+            memset(&fd_data, 0, sizeof(fd_data));
+            fd_data.handle = alloc_data.handle;
+
+            if (ioctl(ion_fd, ION_IOC_SHARE, &fd_data) >= 0) {
+                dmabuf_fd = fd_data.fd;
+            } else {
+                fprintf(stderr, "[FastRPC] ION share (dma-buf fd) failed (errno: %d).\n", errno);
+                struct ion_handle_data free_data = { .handle = alloc_data.handle };
+                ioctl(ion_fd, ION_IOC_FREE, &free_data);
+            }
+        } else {
+            fprintf(stderr, "[FastRPC] ION allocation failed (errno: %d).\n", errno);
+        }
+    }
+
+    if (dmabuf_fd < 0) {
         *fd_out = -1;
         return NULL;
     }
 
-    struct ion_allocation_data alloc_data;
-    memset(&alloc_data, 0, sizeof(alloc_data));
-    alloc_data.len = size;
-    alloc_data.align = 4096;
-    alloc_data.heap_id_mask = 1 << 1; // ION_SYSTEM_HEAP_ID or similar
-    alloc_data.flags = 0; // Uncached / Cached depending on need
+    *fd_out = dmabuf_fd;
 
-    if (ioctl(ion_fd, ION_IOC_ALLOC, &alloc_data) < 0) {
-        fprintf(stderr, "[FastRPC] ION allocation failed.\n");
-        *fd_out = -1;
-        return NULL;
-    }
-
-    struct ion_fd_data fd_data;
-    memset(&fd_data, 0, sizeof(fd_data));
-    fd_data.handle = alloc_data.handle;
-
-    if (ioctl(ion_fd, ION_IOC_SHARE, &fd_data) < 0) {
-        fprintf(stderr, "[FastRPC] ION share (dma-buf fd) failed.\n");
-        struct ion_handle_data free_data = { .handle = alloc_data.handle };
-        ioctl(ion_fd, ION_IOC_FREE, &free_data);
-        *fd_out = -1;
-        return NULL;
-    }
-
-    *fd_out = fd_data.fd;
-
-    void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd_data.fd, 0);
+    void* ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, dmabuf_fd, 0);
     if (ptr == MAP_FAILED) {
-        fprintf(stderr, "[FastRPC] mmap failed.\n");
-        close(fd_data.fd);
-        struct ion_handle_data free_data = { .handle = alloc_data.handle };
-        ioctl(ion_fd, ION_IOC_FREE, &free_data);
+        fprintf(stderr, "[FastRPC] mmap failed (errno: %d).\n", errno);
+        close(dmabuf_fd);
         *fd_out = -1;
         return NULL;
     }

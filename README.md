@@ -86,7 +86,9 @@ O *Projeto Cavalo de Fogo* prova que não precisamos aceitar a obsolescência pr
 ## 🐺 LupinOS v3: Extreme Silicon Layer
 A versão v3 introduz o **Extreme Silicon Layer**, abandonando stubs de nuvem e focando na integração direta e real com o hardware Qualcomm do Mi 11 Ultra:
 
-- **Hexagon 780 cDSP via FastRPC:** Integração real (`/dev/msm_fastrpc-2`) com as bibliotecas nativas de 64 bits (`libcdsprpc.so`) do diretório `/vendor_real`, com suporte a DMA-BUF (Zero-Copy) para tensores de IA.
+- **Hexagon 780 cDSP via FastRPC:** Integração real (`/dev/msm_fastrpc-2`) com as bibliotecas nativas de 64 bits (`libcdsprpc.so`) do diretório `/vendor_real`, com suporte a DMA-BUF (Zero-Copy) para tensores de IA utilizando a moderna alocação `/dev/dma_heap` com fallback para `/dev/ion`.
+- **Sub-Display AMOLED HUD:** Um daemon nativo em C (`lupin_subdisplay_hud`) operando em `/dev/dri/card0` que aproveita o painel traseiro OLED de 1.1" do Mi 11 Ultra para telemetria em tempo real (Bateria, IPs, Temps e Carga) com uso de CPU próximo a zero, sem depender de pilhas gráficas como o Android SurfaceFlinger.
+
 - **Vetorização NEON Cortex-X1:** Kernels matemáticos intensivos (RMSNorm, SwiGLU, e INT8 DotProd) escritos em C com `<arm_neon.h>`, utilizando as instruções ARMv8.4-A Dot Product, fixados nativamente no Core 7 (Cortex-X1 @ 2.84 GHz).
 - **Lupin Native Guardian:** Daemon supervisor bare-metal unificado (em C) encarregado da gestão térmica agressiva (Peltier lock <65C), provisionamento de 12GB de ZRAM, bloqueio de wakelocks USB, montagem sentinela de `/data` e inicialização do ambiente DSP nativo da Qualcomm.
 
