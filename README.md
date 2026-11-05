@@ -92,6 +92,13 @@ A versão v3 introduz o **Extreme Silicon Layer**, abandonando stubs de nuvem e 
 - **Vetorização NEON Cortex-X1:** Kernels matemáticos intensivos (RMSNorm, SwiGLU, e INT8 DotProd) escritos em C com `<arm_neon.h>`, utilizando as instruções ARMv8.4-A Dot Product, fixados nativamente no Core 7 (Cortex-X1 @ 2.84 GHz).
 - **Lupin Native Guardian:** Daemon supervisor bare-metal unificado (em C) encarregado da gestão térmica agressiva (Peltier lock <65C), provisionamento de 12GB de ZRAM, bloqueio de wakelocks USB, montagem sentinela de `/data` e inicialização do ambiente DSP nativo da Qualcomm.
 
+## ⚡ Lupin OS Soberano v4 — Controle Total
+A versão v4 implementa o controle Soberano e absoluto sobre a máquina, eliminando desperdício térmico e ativando os motores de aceleração de hardware:
+- **Governors Finos de CPU (Deep Idle -> Burst):** Implementação via sysfs com a ferramenta CLI `lupin-power`, permitindo trancar os núcleos A55/A78 em idle e disparar o Cortex-X1 para bursts curtos e eficientes.
+- **Watchdog de Rede com Failover:** Daemon interno (`net_watchdog.c`) integrado ao Guardian que detecta interfaces USB/OTG (`eth0`, `rndis0`, `usb0`) e levanta IPs fixos (192.168.31.101 ou 192.168.1.10) de forma automática.
+- **Display Double-Buffering Landscape:** Subdisplay reescrito (`drm_subdisplay.c`) para usar `DRM_IOCTL_MODE_PAGE_FLIP` para eliminar tearing, e mapeando as coordenadas lógicas 294x126 (landscape) no painel físico 126x294 de forma nativa.
+- **NPU Hexagon IPC:** Conexão cDSP FastRPC integrada com um Socket Unix local (`/tmp/lupin_npu.sock`) para inferência de alta performance sem cópia (zero-copy via DMA-BUF).
+
 Para mais detalhes sobre a comunicação com o silício, consulte [QUALCOMM_SILICON_ARCHITECTURE.md](docs/QUALCOMM_SILICON_ARCHITECTURE.md).
 
 ---

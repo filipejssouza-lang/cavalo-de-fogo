@@ -10,6 +10,8 @@
 #include <sys/mount.h>
 #include <sys/syscall.h>
 #include <dirent.h>
+#include "net_watchdog.h"
+#include "../npu/fastrpc_npu.h"
 
 #define ZRAM_DISKSIZE_BYTES 12884901888ULL // 12GB
 #define ZRAM_DISKSIZE_STR "12884901888"
@@ -229,6 +231,20 @@ int main(void) {
     pid_t thermal_pid = fork();
     if (thermal_pid == 0) {
         thermal_loop();
+        exit(0);
+    }
+
+    pid_t net_watchdog_pid = fork();
+    if (net_watchdog_pid == 0) {
+        net_watchdog_loop();
+        exit(0);
+    }
+
+    pid_t npu_pid = fork();
+    if (npu_pid == 0) {
+        if (fastrpc_npu_init()) {
+            fastrpc_npu_loop();
+        }
         exit(0);
     }
 
