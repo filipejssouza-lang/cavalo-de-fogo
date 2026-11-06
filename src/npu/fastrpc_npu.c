@@ -25,7 +25,7 @@ struct dma_heap_allocation_data {
 
 #define DMA_HEAP_IOC_MAGIC 'H'
 #define DMA_HEAP_IOCTL_ALLOC _IOWR(DMA_HEAP_IOC_MAGIC, 0x0, struct dma_heap_allocation_data)
-#define SOCK_PATH "/tmp/lupin_npu.sock"
+#define SOCK_PATH "/run/lupin/npu.sock"
 
 // IOCTL values for FastRPC (simplified for the demonstration, based on general msm_fastrpc)
 #define FASTRPC_IOCTL_INIT_ATTACH _IO('R', 1)

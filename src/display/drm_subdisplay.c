@@ -486,7 +486,27 @@ int main() {
             fb.back_idx = (fb.back_idx + 1) % 2;
         }
         
-        usleep(500000); // 0.5 sec update rate
+        
+        // Wait for vblank using select() and drmHandleEvent avoiding busy loop
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(fb.fd, &fds);
+        struct timeval tv = {1, 0}; // 1 sec timeout max
+        
+        int ret = select(fb.fd + 1, &fds, NULL, NULL, &tv);
+        if (ret > 0) {
+            // Simplified drmHandleEvent equivalent check
+            char buf[128];
+            int unused = read(fb.fd, buf, sizeof(buf));
+            (void)unused;
+        }
+
+        // adaptive refresh rate 1 FPS idle / 60 FPS burst
+        if (tel.load_avg > 1.0 || tel.cpu_temp > 50.0) {
+            usleep(16666); // 60 FPS
+        } else {
+            usleep(1000000); // 1 FPS
+        }
     }
     
     printf("[HUD] Shutting down gracefully...\n");

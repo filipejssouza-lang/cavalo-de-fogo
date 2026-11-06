@@ -1,12 +1,13 @@
-//! 🐺 Sovereign LupinOS Hardware Daemon & Heterogeneous Inference Server v0.5.0
-//! Snapdragon 888 (SM8350) - Xiaomi Mi 11 Ultra (star)
-//! Features:
-//! - Prime Core 7 Cortex-X1: Pure Rust ARM NEON SIMD (1.16 µs / token)
-//! - Prime Core 7 Cortex-X1: Statically Linked Native Mojo C-ABI (5.23 µs / token)
-//! - Adreno 660 GPU: Turnip Mesa Vulkan 1.3 SPIR-V Compute & UMA Zero-Copy (39.88 GFLOPS)
-//! - Hexagon 780 cDSP NPU: Direct Linux FastRPC channel (/dev/adsprpc-smd, FD: 3)
-//! - Rear 1.1" AMOLED Display: SDE KMS Hardware Engine (card0-DSI-2, CRTC 199)
-//! - Asynchronous High-Speed HTTP/REST Inference API on 0.0.0.0:8080
+mod uds_server;
+// 🐺 Sovereign LupinOS Hardware Daemon & Heterogeneous Inference Server v0.5.0
+// Snapdragon 888 (SM8350) - Xiaomi Mi 11 Ultra (star)
+// Features:
+// - Prime Core 7 Cortex-X1: Pure Rust ARM NEON SIMD (1.16 µs / token)
+// - Prime Core 7 Cortex-X1: Statically Linked Native Mojo C-ABI (5.23 µs / token)
+// - Adreno 660 GPU: Turnip Mesa Vulkan 1.3 SPIR-V Compute & UMA Zero-Copy (39.88 GFLOPS)
+// - Hexagon 780 cDSP NPU: Direct Linux FastRPC channel (/dev/adsprpc-smd, FD: 3)
+// - Rear 1.1" AMOLED Display: SDE KMS Hardware Engine (card0-DSI-2, CRTC 199)
+// - Asynchronous High-Speed HTTP/REST Inference API on 0.0.0.0:8080
 
 use lupinos_display::{RearDisplay, TelemetryData};
 use lupinos_fastrpc::FastRpcSession;
@@ -417,6 +418,9 @@ fn main() {
             counter += 1;
         }
     });
+
+    // Start UNIX Domain Socket server for lupinctl
+    uds_server::start_uds_server();
 
     // 7. Start Sovereign HTTP Server on 0.0.0.0:8080
     println!("🌐 [API] Binding HTTP Sovereign Server on 0.0.0.0:8080...");

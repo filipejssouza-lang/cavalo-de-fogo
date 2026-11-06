@@ -44,3 +44,11 @@ clean:
 	rm -f $(OBJ_CPU) $(OBJ_NPU) $(OBJ_GUARDIAN) $(OBJ_BENCH)
 
 .PHONY: all clean hud
+
+build/lupinctl: src/lupinctl/lupinctl.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $< -o $@
+
+lupinctl: build/lupinctl
+
+TARGETS += build/lupinctl
