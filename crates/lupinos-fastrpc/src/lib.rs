@@ -86,7 +86,7 @@ impl FastRpcSession {
         };
 
         unsafe {
-            let rc = libc::ioctl(file.as_raw_fd(), FASTRPC_IOCTL_INIT, &mut init_args);
+            let rc = libc::ioctl(file.as_raw_fd(), FASTRPC_IOCTL_INIT as _, &mut init_args);
             // Note: on some kernels attach returns 0, or EEXIST if already attached
             if rc != 0 && *libc::__errno_location() != libc::EEXIST {
                 // Warning only - fallback to direct invocation
@@ -129,7 +129,7 @@ impl FastRpcSession {
             crc: 0,
         };
 
-        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), FASTRPC_IOCTL_INVOKE, &mut inv) };
+        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), FASTRPC_IOCTL_INVOKE as _, &mut inv) };
         if rc != 0 {
             let err = unsafe { *libc::__errno_location() };
             return Err(FastRpcError::IoctlFailed(err));

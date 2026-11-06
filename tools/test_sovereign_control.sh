@@ -1,34 +1,58 @@
 #!/bin/bash
 set -e
 
-echo "Building binaries..."
-make clean
-make
+echo "=========================================="
+echo " Running Sovereign Control Tests..."
+echo "=========================================="
 
-echo ""
-echo "Running tests..."
-echo "1. Network Watchdog (compile check)"
-if [ -f "build/lupinos_guard" ]; then
-    echo "[PASS] lupinos_guard compiled successfully"
-else
-    echo "[FAIL] lupinos_guard not found"
-    exit 1
+mkdir -p build
+gcc -O3 -Wall -DMOCK_HAL tools/lupin_slot_ctl.c -o build/lupin_slot_ctl_test -ldl
+
+BIN="./build/lupin_slot_ctl_test"
+
+export LUPIN_DATA_DIR=/tmp
+rm -f /tmp/lupin_fails_a.bin /tmp/lupin_fails_b.bin
+
+# Test 1: check-rollback e persistência
+$BIN check-rollback
+FAIL_COUNT=$(cat /tmp/lupin_fails_a.bin 2>/dev/null || echo 0)
+if [ "$FAIL_COUNT" != "1" ]; then
+    echo "Falhou! Esperado 1, encontrado: $FAIL_COUNT"
+    false
 fi
 
-echo "2. CPU Power Control CLI"
-if [ -f "build/lupin-power" ]; then
-    echo "[PASS] lupin-power compiled successfully"
-else
-    echo "[FAIL] lupin-power not found"
-    exit 1
+$BIN check-rollback
+FAIL_COUNT=$(cat /tmp/lupin_fails_a.bin 2>/dev/null || echo 0)
+if [ "$FAIL_COUNT" != "2" ]; then
+    echo "Falhou! Esperado 2, encontrado: $FAIL_COUNT"
+    false
 fi
 
-echo "3. DRM Subdisplay HUD"
-if [ -f "build/drm_subdisplay" ]; then
-    echo "[PASS] drm_subdisplay compiled successfully"
-else
-    echo "[FAIL] drm_subdisplay not found"
-    exit 1
+# Test 2: Rollback apos 3 falhas, deve voltar para 0
+$BIN check-rollback
+FAIL_COUNT=$(cat /tmp/lupin_fails_a.bin 2>/dev/null || echo 0)
+if [ "$FAIL_COUNT" != "0" ]; then
+    echo "Rollback não reiniciou contador. Encontrado: $FAIL_COUNT"
+    false
 fi
 
-echo "All tests passed (Compilation OK)."
+# Test 3: mark-success deve limpar falhas
+$BIN check-rollback
+$BIN mark-success
+FAIL_COUNT=$(cat /tmp/lupin_fails_a.bin 2>/dev/null || echo 0)
+if [ "$FAIL_COUNT" != "0" ]; then
+    echo "mark-success não limpou falhas! Esperado 0, encontrado: $FAIL_COUNT"
+    false
+fi
+
+# Test 4: verify dry-run doesn't write
+$BIN check-rollback
+$BIN check-rollback --dry-run
+FAIL_COUNT=$(cat /tmp/lupin_fails_a.bin 2>/dev/null || echo 0)
+if [ "$FAIL_COUNT" != "1" ]; then
+    echo "dry-run modificou persistencia! Esperado 1, encontrado: $FAIL_COUNT"
+    false
+fi
+
+rm -f /tmp/lupin_fails_a.bin /tmp/lupin_fails_b.bin
+echo "[✓] Todos os testes da Soberania passaram com 100% sucesso."
