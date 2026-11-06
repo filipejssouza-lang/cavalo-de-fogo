@@ -110,11 +110,11 @@ impl FastRpcSession {
         };
 
         unsafe {
-            let rc = libc::ioctl(file.as_raw_fd(), FASTRPC_IOCTL_INIT, &mut init_args);
+            let rc = libc::ioctl(file.as_raw_fd(), FASTRPC_IOCTL_INIT.try_into().unwrap(), &mut init_args);
             if rc != 0 {
                 let _errno = std::io::Error::last_os_error().raw_os_error();
                 let _ = _errno;
-                let _ = libc::ioctl(file.as_raw_fd(), FASTRPC_IOCTL_INIT_ATTACH);
+                let _ = libc::ioctl(file.as_raw_fd(), FASTRPC_IOCTL_INIT_ATTACH.try_into().unwrap());
             }
         }
 
@@ -150,7 +150,7 @@ impl FastRpcSession {
             pra: args.as_ptr() as u64,
         };
 
-        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), FASTRPC_IOCTL_INVOKE, &mut inv) };
+        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), FASTRPC_IOCTL_INVOKE.try_into().unwrap(), &mut inv) };
         if rc != 0 {
             // Fallback to CRC invoke struct used on newer SM8350 kernels
             let mut inv_crc = FastRpcInvokeCrc {
@@ -160,7 +160,7 @@ impl FastRpcSession {
                 crc: 0,
             };
             let rc_crc = unsafe {
-                libc::ioctl(self.file.as_raw_fd(), FASTRPC_IOCTL_INVOKE_CRC, &mut inv_crc)
+                libc::ioctl(self.file.as_raw_fd(), FASTRPC_IOCTL_INVOKE_CRC.try_into().unwrap(), &mut inv_crc)
             };
             if rc_crc != 0 {
                 let _errno = std::io::Error::last_os_error().raw_os_error();
@@ -203,7 +203,7 @@ impl FastRpcSession {
             fds: fds.as_ptr() as u64,
         };
 
-        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), FASTRPC_IOCTL_INVOKE_FD, &mut inv_fd) };
+        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), FASTRPC_IOCTL_INVOKE_FD.try_into().unwrap(), &mut inv_fd) };
         if rc != 0 {
             let _errno = std::io::Error::last_os_error().raw_os_error();
             let _ = _errno;

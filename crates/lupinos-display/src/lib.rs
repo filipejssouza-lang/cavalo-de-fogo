@@ -200,7 +200,7 @@ impl RearDisplay {
                 ..Default::default()
             };
             unsafe {
-                let _ = libc::ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &mut conn);
+                let _ = libc::ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR.try_into().unwrap(), &mut conn);
             }
 
             let mut ok = true;
@@ -211,7 +211,7 @@ impl RearDisplay {
                     bpp: 32,
                     ..Default::default()
                 };
-                let rc = unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut create) };
+                let rc = unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB.try_into().unwrap(), &mut create) };
                 if rc < 0 {
                     ok = false;
                     break;
@@ -231,7 +231,7 @@ impl RearDisplay {
                     handle: create.handle,
                     ..Default::default()
                 };
-                if unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_ADDFB, &mut add_fb) } == 0 {
+                if unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_ADDFB.try_into().unwrap(), &mut add_fb) } == 0 {
                     disp.fb_ids[i] = add_fb.fb_id;
                 }
 
@@ -239,7 +239,7 @@ impl RearDisplay {
                     handle: create.handle,
                     ..Default::default()
                 };
-                if unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mut map_arg) } < 0 {
+                if unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB.try_into().unwrap(), &mut map_arg) } < 0 {
                     ok = false;
                     break;
                 }
@@ -272,7 +272,7 @@ impl RearDisplay {
                     mode,
                     ..Default::default()
                 };
-                if unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_SETCRTC, &mut set_crtc) } >= 0 {
+                if unsafe { libc::ioctl(fd, DRM_IOCTL_MODE_SETCRTC.try_into().unwrap(), &mut set_crtc) } >= 0 {
                     disp.drm_active = true;
                     disp.back_idx = 1;
                 }
@@ -357,7 +357,7 @@ impl RearDisplay {
                     ..Default::default()
                 };
                 unsafe {
-                    let _ = libc::ioctl(fd, DRM_IOCTL_MODE_DIRTYFB, &mut dirty);
+                    let _ = libc::ioctl(fd, DRM_IOCTL_MODE_DIRTYFB.try_into().unwrap(), &mut dirty);
                 }
 
                 if self.drm_active {
@@ -368,7 +368,7 @@ impl RearDisplay {
                         ..Default::default()
                     };
                     unsafe {
-                        let _ = libc::ioctl(fd, DRM_IOCTL_MODE_PAGE_FLIP, &mut flip);
+                        let _ = libc::ioctl(fd, DRM_IOCTL_MODE_PAGE_FLIP.try_into().unwrap(), &mut flip);
                     }
                 }
                 self.back_idx = (self.back_idx + 1) % 2;
@@ -441,7 +441,7 @@ impl Drop for RearDisplay {
                 if self.fb_ids[i] != 0 {
                     let mut fb_id = self.fb_ids[i];
                     unsafe {
-                        let _ = libc::ioctl(fd, DRM_IOCTL_MODE_RMFB, &mut fb_id);
+                        let _ = libc::ioctl(fd, DRM_IOCTL_MODE_RMFB.try_into().unwrap(), &mut fb_id);
                     }
                 }
                 if self.handles[i] != 0 {
@@ -449,7 +449,7 @@ impl Drop for RearDisplay {
                         handle: self.handles[i],
                     };
                     unsafe {
-                        let _ = libc::ioctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &mut destroy);
+                        let _ = libc::ioctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB.try_into().unwrap(), &mut destroy);
                     }
                 }
             }
