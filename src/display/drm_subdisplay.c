@@ -460,6 +460,20 @@ int main() {
         draw_text(&fb, 5, y, buf, color_white);
         y += 15;
         
+        // Mode
+        FILE *state_f = fopen("/tmp/lupin_thermal_state", "r");
+        char state_str[32] = "UNKNOWN";
+        if (state_f) {
+            if (fgets(state_str, sizeof(state_str), state_f)) {
+                // Strip newline
+                state_str[strcspn(state_str, "\n")] = 0;
+            }
+            fclose(state_f);
+        }
+        snprintf(buf, sizeof(buf), "MODE: %s", state_str);
+        draw_text(&fb, 5, y, buf, color_white);
+        y += 15;
+
         // Model
         draw_text(&fb, 5, y, "MODEL:", color_green);
         y += 10;

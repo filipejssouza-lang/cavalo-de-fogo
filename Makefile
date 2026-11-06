@@ -5,7 +5,7 @@ LDFLAGS = -lm -lpthread -ldl
 
 SRC_CPU = src/cpu/neon_kernels.c src/cpu/governor_control.c
 SRC_NPU = src/npu/fastrpc_cdsp.c src/npu/fastrpc_npu.c
-SRC_GUARDIAN = src/guardian/lupinos_guard.c src/guardian/net_watchdog.c
+SRC_GUARDIAN = src/guardian/lupinos_guard.c src/guardian/net_watchdog.c src/cpu/governor_daemon.c src/cpu/governor_control.c
 SRC_BENCH = src/bench/bench_extreme.c
 
 OBJ_CPU = $(SRC_CPU:.c=.o)
@@ -27,6 +27,7 @@ build/drm_subdisplay: src/display/drm_subdisplay.c
 build/lupin-power: src/cpu/lupin_power.c src/cpu/governor_control.c
 	@mkdir -p build
 	$(CC) -O2 -static -Wall $^ -o $@ $(LDFLAGS)
+	ln -sf lupin-power build/lupinctl
 
 build/lupinos_guard: $(OBJ_GUARDIAN) $(OBJ_NPU)
 	@mkdir -p build
