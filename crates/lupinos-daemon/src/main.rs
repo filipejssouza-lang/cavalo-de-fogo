@@ -1,4 +1,5 @@
 mod uds_server;
+mod lora_manager;
 // 🐺 Sovereign LupinOS Hardware Daemon & Heterogeneous Inference Server v0.5.0
 // Snapdragon 888 (SM8350) - Xiaomi Mi 11 Ultra (star)
 // Features:
@@ -17,6 +18,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use lora_manager::LoraManager;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -131,6 +133,7 @@ fn bind_core_7() {
         let rc = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
         if rc == 0 {
             println!("⚡ [CPU] Pinned Daemon Main Thread to Prime Core 7 (Cortex-X1 @ 2.84 GHz)");
+            let body = String::new();
         } else {
             eprintln!("⚠️ [CPU] Running without strict core pinning (Non-fatal)");
         }
@@ -189,6 +192,7 @@ struct AppState {
     total_inferences: AtomicUsize,
     is_inferring: AtomicBool,
     vulkan: Option<VulkanAdrenoEngine>,
+    lora: Arc<LoraManager>,
 }
 
 fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
@@ -328,8 +332,79 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
                 body
             );
             let _ = stream.write_all(response.as_bytes());
+        } else if req.starts_with("POST /lora/load") {
+            let mut body = String::new();
+            if let Some(pos) = req.find("\r\n\r\n") {
+                body = req[pos + 4..].to_string();
+            }
+
+            let mut name = String::new();
+            let mut path = String::new();
+
+            if let Some(n_start) = body.find("\"name\":\"") {
+                if let Some(n_end) = body[n_start + 8..].find('\"') {
+                    name = body[n_start + 8..n_start + 8 + n_end].to_string();
+                }
+            }
+
+            if let Some(p_start) = body.find("\"path\":\"") {
+                if let Some(p_end) = body[p_start + 8..].find('\"') {
+                    path = body[p_start + 8..p_start + 8 + p_end].to_string();
+                }
+            }
+
+            if !name.is_empty() && !path.is_empty() {
+                match state.lora.load(name, path) {
+                    Ok(_) => {
+                        let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}\n";
+                        let _ = stream.write_all(resp.as_bytes());
+                    }
+                    Err(e) => {
+                        let resp = format!("HTTP/1.1 500 INTERNAL SERVER ERROR\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{{\"error\":\"{}\"}}\n", e);
+                        let _ = stream.write_all(resp.as_bytes());
+                    }
+                }
+            } else {
+                let resp = "HTTP/1.1 400 BAD REQUEST\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"error\":\"Invalid request\"}\n";
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        } else if req.starts_with("GET /lora/list") {
+            match state.lora.list() {
+                Ok(adapters) => {
+                    let mut adapters_json = String::from("[");
+                    for (i, adapter) in adapters.iter().enumerate() {
+                        adapters_json.push_str(&format!("{{\"name\":\"{}\",\"path\":\"{}\"}}", adapter.name, adapter.path));
+                        if i < adapters.len() - 1 {
+                            adapters_json.push_str(",");
+                        }
+                    }
+                    adapters_json.push_str("]");
+                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{{\"status\":\"ok\",\"adapters\":{}}}\n", adapters_json);
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+                Err(e) => {
+                    let resp = format!("HTTP/1.1 500 INTERNAL SERVER ERROR\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{{\"error\":\"{}\"}}\n", e);
+                    let _ = stream.write_all(resp.as_bytes());
+                }
+            }
+        } else if req.starts_with("POST /lora/unload") {
+            let mut body = String::new();
+            if let Some(pos) = req.find("\r\n\r\n") {
+                body = req[pos + 4..].to_string();
+            }
+            let mut name = String::new();
+            if let Some(n_start) = body.find("\"name\":\"") {
+                if let Some(n_end) = body[n_start + 8..].find('\"') {
+                    name = body[n_start + 8..n_start + 8 + n_end].to_string();
+                }
+            }
+            if !name.is_empty() {
+                let _ = state.lora.unload(&name);
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}\n";
+                let _ = stream.write_all(resp.as_bytes());
+            }
         } else {
-            let body = "{\"error\":\"Not Found\",\"available_endpoints\":[\"/health\",\"/status\",\"/infer\",\"/infer/mojo\",\"/infer/gpu\"]}\n";
+            let body = String::new();
             let response = format!(
                 "HTTP/1.1 404 NOT FOUND\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -372,6 +447,7 @@ fn main() {
         total_inferences: AtomicUsize::new(0),
         is_inferring: AtomicBool::new(false),
         vulkan,
+        lora: Arc::new(LoraManager::new()),
     });
 
     // 6. Spawn Rear AMOLED Display Thread
