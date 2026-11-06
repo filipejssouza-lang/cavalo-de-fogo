@@ -1,5 +1,12 @@
 CC ?= gcc
-ARCH_FLAGS ?= -march=armv8.2-a+dotprod
+ARCH_Check := $(shell $(CC) -dumpmachine 2>/dev/null)
+
+ifneq (,$(findstring aarch64,$(ARCH_Check)))
+    ARCH_FLAGS = -march=armv8.4-a+dotprod
+else
+    ARCH_FLAGS =
+endif
+
 CFLAGS = -O3 -static $(ARCH_FLAGS) -ffast-math -Wall
 LDFLAGS = -lm -lpthread -ldl
 

@@ -11,6 +11,10 @@
 #include <sys/mman.h>
 #include <signal.h>
 #include <errno.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/sysinfo.h>
 
 // Simple mock DRM ioctls for compilation since we don't have full drm-core headers
 // The actual device has standard Linux DRM ioctls. We declare what we need.
@@ -115,9 +119,12 @@ void handle_signal(int sig) {
 
 bool drm_init(drm_fb_t *fb) {
     memset(fb, 0, sizeof(*fb));
-    fb->width = HUD_WIDTH;
-    fb->height = HUD_HEIGHT;
-    
+    fb->width    = HUD_WIDTH;
+    fb->height   = HUD_HEIGHT;
+    fb->conn_id  = 64;  /* DSI-2 rear subdisplay connector on Mi 11 Ultra */
+    fb->crtc_id  = 208; /* SDE KMS CRTC bound to DSI-2 */
+    fb->back_idx = 0;
+
     // Open DRM device (card0)
     fb->fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
     if (fb->fd < 0) {
