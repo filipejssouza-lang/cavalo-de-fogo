@@ -1,0 +1,6 @@
+{
+  "name": "lupinos-dashboard",
+  "description": "LupinOS Extreme Silicon Control Deck & Heterogeneous Hardware Telemetry Console for Snapdragon 888 (Mi 11 Ultra)",
+  "version": "1.0.0",
+  "private": true
+}
