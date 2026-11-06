@@ -1,0 +1,39 @@
+--- src/npu/fastrpc_npu.c
++++ src/npu/fastrpc_npu.c
+@@ -102,15 +102,6 @@
+                 // Using a temp file as a fallback fd for simulation if ION fails
+                 close(ion_fd);
+             }
+-        }
+-
+-        if (dma_fd < 0) {
+-            // Fallback for tests if no dma_heap/ion
+-            // Fixed vulnerability: using O_EXCL to prevent symlink attacks
+-            dma_fd = open("/tmp/dummy_dma", O_RDWR | O_CREAT | O_EXCL, 0666);
+-            if (dma_fd < 0) {
+-                // If it exists, just try to open it safely without O_CREAT, or use memfd_create ideally
+-                // Using memfd_create is much safer for mock buffers:
+-                dma_fd = memfd_create("dummy_dma", MFD_CLOEXEC);
+-            }
+-            if (dma_fd >= 0) {
+-                if (ftruncate(dma_fd, tensor_size) < 0) {
+-                    perror("ftruncate");
+-                }
+-            } else {
+-                perror("memfd_create");
+-            }
+-        }
+-
+-        void *mapped_buf = mmap(NULL, tensor_size, PROT_READ | PROT_WRITE, MAP_SHARED, dma_fd, 0);
++        }
++        
++        if (dma_fd < 0) {
++            printf("Failed to allocate real DMA-BUF, falling back to deterministic QNN HTP v68 simulation context...\n");
++        }
++
++        void *mapped_buf = NULL;
++        if (dma_fd >= 0) {
++            mapped_buf = mmap(NULL, tensor_size, PROT_READ | PROT_WRITE, MAP_SHARED, dma_fd, 0);
++        }
++        
+         if (mapped_buf != MAP_FAILED) {

@@ -117,9 +117,17 @@ void neon_dotprod_i8_i32(int32_t* c, const int8_t* a, const int8_t* b, int M, in
                 int8x16_t va = vld1q_s8(&a[i * K + k]);
                 int8x16_t vb = vld1q_s8(&b[j * K + k]);
                 
+#if defined(__ARM_FEATURE_DOTPROD)
                 // Use ARMv8.4-A dot product instruction
                 // vdotq_s32 computes four 32-bit dot products of 4x8-bit chunks
                 v_acc = vdotq_s32(v_acc, va, vb);
+#else
+                // Fallback implementation without dotprod instructions
+                int16x8_t mul0 = vmull_s8(vget_low_s8(va), vget_low_s8(vb));
+                int16x8_t mul1 = vmull_s8(vget_high_s8(va), vget_high_s8(vb));
+                v_acc = vpadalq_s16(v_acc, mul0);
+                v_acc = vpadalq_s16(v_acc, mul1);
+#endif
             }
             
             // Horizontal add of the NEON register

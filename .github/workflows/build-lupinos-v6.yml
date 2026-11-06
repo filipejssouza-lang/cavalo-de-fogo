@@ -1,4 +1,4 @@
-name: Build & Package Lupin Bare-Metal OS v3
+name: Build & Package Lupin Bare-Metal OS v6
 
 on:
   push:
@@ -38,10 +38,11 @@ jobs:
           file bin/lupinos_guard
           ls -la bin/lupinos_guard
 
-      - name: Verify Build Tools Syntax
-        run: |
-          python3 -m py_compile tools/build_os_v3.py
-          python3 tools/build_os_v3.py --help
+      - name: Build C Binaries
+        run: CC=aarch64-linux-gnu-gcc make
+
+      - name: Run Tests (Host Runnable)
+        run: cargo test --manifest-path crates/lupinos-daemon/Cargo.toml
 
       - name: Optional Assemble Full Boot Image
         if: ${{ inputs.base_boot_url != '' }}

@@ -1,5 +1,6 @@
 CC ?= gcc
-CFLAGS = -O3 -static -march=armv8.4-a+dotprod -ffast-math -Wall
+ARCH_FLAGS ?= -march=armv8.2-a+dotprod
+CFLAGS = -O3 -static $(ARCH_FLAGS) -ffast-math -Wall
 LDFLAGS = -lm -lpthread -ldl
 
 SRC_CPU = src/cpu/neon_kernels.c src/cpu/governor_control.c
