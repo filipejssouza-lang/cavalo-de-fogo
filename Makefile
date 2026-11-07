@@ -1,13 +1,15 @@
 CC ?= gcc
 ARCH_Check := $(shell $(CC) -dumpmachine 2>/dev/null)
 
+STATIC ?=
 ifneq (,$(findstring aarch64,$(ARCH_Check)))
     ARCH_FLAGS = -march=armv8.4-a+dotprod
+    STATIC ?= -static
 else
     ARCH_FLAGS =
 endif
 
-CFLAGS = -O3 -static $(ARCH_FLAGS) -ffast-math -Wall
+CFLAGS = -O3 $(STATIC) $(ARCH_FLAGS) -ffast-math -Wall
 LDFLAGS = -lm -lpthread -ldl
 
 SRC_CPU = src/cpu/neon_kernels.c src/cpu/governor_control.c
@@ -29,11 +31,11 @@ hud: build/drm_subdisplay
 
 build/drm_subdisplay: src/display/drm_subdisplay.c
 	@mkdir -p build
-	$(CC) -O2 -static -Wall $< -o $@ $(LDFLAGS)
+	$(CC) -O2 $(STATIC) -Wall $< -o $@ $(LDFLAGS)
 
 build/lupin-power: src/cpu/lupin_power.c src/cpu/governor_control.c
 	@mkdir -p build
-	$(CC) -O2 -static -Wall $^ -o $@ $(LDFLAGS)
+	$(CC) -O2 $(STATIC) -Wall $^ -o $@ $(LDFLAGS)
 	ln -sf lupin-power build/lupinctl
 
 build/lupinos_guard: $(OBJ_GUARDIAN) $(OBJ_NPU)
@@ -59,4 +61,11 @@ build/lupinctl: src/lupinctl/lupinctl.c
 
 lupinctl: build/lupinctl
 
-TARGETS += build/lupinctl
+build/lupin_slot_ctl: tools/lupin_slot_ctl.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
+
+slot_ctl: build/lupin_slot_ctl
+
+TARGETS += build/lupinctl build/lupin_slot_ctl
+

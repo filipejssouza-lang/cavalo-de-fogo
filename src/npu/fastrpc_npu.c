@@ -9,7 +9,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/mman.h>
-#include <stdint.h>\n#include <time.h>
+#include <stdint.h>
+#include <time.h>
 #include <linux/dma-buf.h>
 
 #define FASTRPC_DEVICE "/dev/msm_fastrpc-2"

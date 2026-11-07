@@ -1,112 +1,193 @@
-# 🔥 Projeto Cavalo de Fogo: Bare-Metal Linux via TWRP Chroot
-
-Uma abordagem inovadora e "brutalista" para rodar um servidor Linux de altíssima performance (Inteligência Artificial e Gaming 3D) em hardware mobile, ignorando completamente o sistema operacional Android.
-
----
-
-## 💡 O Problema
-Normalmente, desenvolvedores e hackers que desejam rodar Linux em smartphones topo de linha enfrentam dois becos sem saída:
-1. **Termux / Linux Deploy (Emulação/Containers no Android):** Causa um overhead massivo. O Android (Zygote, SurfaceFlinger, daemons) consome de 3 a 4 GB de RAM e dezenas de ciclos de CPU em segundo plano. Sobra pouco para tarefas críticas.
-2. **PostmarketOS / Ubuntu Touch (Substituição Total):** Exige recompilação completa do Kernel, engenharia reversa de drivers e resulta frequentemente em hardware quebrado (Wi-Fi, Bluetooth ou GPU não funcionam adequadamente).
-
-## 🚀 A Solução: O Hack do TWRP
-Em vez de lutar contra o Android ou tentar reescrever o Kernel, nós "sequestramos" o processo de boot usando o **TWRP (Team Win Recovery Project)**.
-
-O TWRP atua essencialmente como um *initramfs* Linux mínimo e hiperleve. O Android nunca dá o boot. O aparelho liga e estaciona no modo Recovery, onde temos acesso total ao Kernel original de fábrica (com todos os drivers perfeitos) e permissões totais de root sem restrições (SELinux Permissive).
-
-A partir do TWRP, executamos um `chroot` diretamente para sistemas de arquivos isolados (`/data/alpine` ou `/data/debian`). O resultado é **100% dos recursos de hardware (12GB de RAM, Snapdragon 888) dedicados exclusivamente à sua aplicação.**
+# 🐺 Lupin OS v6 — Soberania Autônoma
+> **Sistema Operacional Bare-Metal para Silício Qualcomm Snapdragon 888 (SM8350)**  
+> **Nó Principal do Cluster Lupin:** Xiaomi Mi 11 Ultra (*star*) — 12 GB LPDDR5 | 256 GB UFS 3.1 | Cooler Peltier Ativo
 
 ---
 
-## 🛠️ O Hardware (Cluster Node)
-- **Aparelho:** Xiaomi Mi 11 Ultra ("Cavalo de Fogo")
-- **Chipset:** Qualcomm Snapdragon 888 (SM8350)
-- **Memória:** 12 GB RAM LPDDR5 | 256 GB UFS 3.1
-- **Refrigeração:** Cooler Peltier (Placa de Resfriamento Ativo) acoplado, mantendo o chassi e o silício operando entre 32-34°C sob carga extrema, eliminando o *thermal throttling*.
+## ⚡ O que é o Lupin OS v6?
+
+O **Lupin OS** é um sistema operacional bare-metal de alta performance projetado para transformar hardware mobile topo de linha em nós soberanos de inteligência artificial, computação heterogênea e telecomunicações edge, **eliminando 100% o overhead do Android**.
+
+Na versão **v6 ("Soberania Autônoma")**, o sistema atinge independência completa de ferramentas legadas:
+- ❌ **Zero Android:** Sem Zygote, sem SurfaceFlinger, sem JVM e sem Telemetria OEM.
+- ❌ **Zero TWRP (Expurgo Definitivo):** O antigo hack de inicialização via TWRP foi **completamente eliminado**. Todas as 14 bibliotecas e binários do TWRP foram arrancados do ramdisk.
+- ✅ **Boot Bare-Metal Nativo:** O Lupin OS inicializa diretamente da partição `boot_b` via Linux Initramfs puro, com assinatura **AVB 2.0 (192 MB exatos)** e **Rollback Automático A/B**.
+- ✅ **Tri-Silicon Heterogêneo:** Alocação de tarefas distribuída entre Cortex-X1, NPU Hexagon 780 e GPU Adreno 660.
 
 ---
 
-## 🧬 Arquitetura Dual Mode (Chroot Duplo)
+## 🏛️ Arquitetura de Silício Heterogêneo
 
-O sistema foi arquitetado para alternar a quente entre dois modos distintos, dependendo da necessidade computacional:
-
-### 🧠 1. Modo IA (Alpine Linux aarch64)
-Um contêiner minimalista focado em consumir o mínimo de RAM e entregar a máxima potência para motores de inferência locais.
-- **Ambiente:** Alpine Linux 3.20 (musl libc).
-- **Serviços:**
-  - `llama-server` nativo rodando Llama 3.2 (Hermes 3), Gemma 4 e Qwen 2.5 direto no metal.
-  - Runtime customizado injetado (`glibc`) para rodar agentes Go e ferramentas CLI nativas (Antigravity).
-  - OpenClaw Gateway (Node.js) em modo supervisor de 128k tokens.
-  - Servidor de Mídia HTTP (Filmes e Séries) com conversão `ffmpeg` on-the-fly.
-- **Vantagem:** Sem interface gráfica. Frio, rápido e consome praticamente zero megabytes para o SO base.
-
-### 🎮 2. Modo Console Bare-Metal (Debian 12 aarch64)
-Um contêiner massivo focado em aceleração gráfica de hardware, engenharia reversa e jogos x86.
-- **Aceleração 3D:** Drivers Mesa (Turnip/Vulkan/Zink) compilados na unha comunicando-se diretamente com o driver KGSL (`/dev/kgsl-3d0`) do kernel nativo.
-- **Tradução x86/Windows:** Box64 e Wine (WOW64) operando sob Vulkan para rodar executáveis de PC (`.exe`).
-- **Streaming:** Servidor Sunshine rodando junto de um XFCE4 Desktop (Xvfb/Wayland), capturando a renderização 3D da GPU e transmitindo com latência zero via cabo USB para a Workstation (via Moonlight).
-
----
-
-## 📖 Como Funciona (O Script Mágico)
-
-O segredo está em montar os diretórios vitais do Kernel dentro da pasta raiz do seu Linux antes de aplicar o chroot. Aqui está o núcleo da lógica executada a partir do terminal do TWRP:
-
-```bash
-# 1. Definir a pasta raiz do seu Linux (ex: Debian extraído)
-ROOTFS="/data/debian"
-
-# 2. Montar sistemas de arquivos vitais do Kernel do Android para dentro do Linux
-mount -o bind /dev $ROOTFS/dev
-mount -o bind /dev/pts $ROOTFS/dev/pts
-mount -o bind /proc $ROOTFS/proc
-mount -o bind /sys $ROOTFS/sys
-
-# Opcional: Montar partições nativas do celular (SDCard, Vendor)
-mount -o bind /sdcard $ROOTFS/sdcard
-
-# 3. Corrigir variáveis de ambiente básicas
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export HOME=/root
-export TERM=xterm-256color
-
-# 4. Injetar (Chroot) e iniciar o sistema
-chroot $ROOTFS /bin/bash -c "service ssh start && /root/start_desktop.sh"
+```
+                      ┌────────────────────────────────────────┐
+                      │        Lupin OS v6 Bare-Metal          │
+                      └───────────────────┬────────────────────┘
+                                          │
+            ┌─────────────────────────────┼─────────────────────────────┐
+            ▼                             ▼                             ▼
+   ┌──────────────────┐          ┌──────────────────┐          ┌──────────────────┐
+   │  Prime Core 7    │          │  Hexagon 780     │          │   Adreno 660     │
+   │  Cortex-X1       │          │  cDSP / NPU      │          │   GPU Vulkan     │
+   │  @ 2.84 GHz      │          │  (v68 HTP)       │          │  (Mesa Turnip)   │
+   ├──────────────────┤          ├──────────────────┤          ├──────────────────┤
+   │ • NEON SIMD F32  │          │ • FastRPC Linux  │          │ • Vulkan 1.3 UMA │
+   │ • lupin-power    │          │ • DMA-BUF Zero-  │          │ • Zero-Copy KV   │
+   │   idle/bal/burst │          │   Copy I/O       │          │ • SPIR-V GEMM    │
+   │ • Closed-Loop    │          │ • HTTP API :8091 │          │ • /dev/kgsl-3d0  │
+   │   Thermal Guard  │          │ • Fallback :8080 │          │                  │
+   └──────────────────┘          └──────────────────┘          └──────────────────┘
+            ▲                             ▲                             ▲
+            └─────────────────────────────┼─────────────────────────────┘
+                                          │
+                      ┌───────────────────┴────────────────────┐
+                      │    Display Traseiro AMOLED 1.1"        │
+                      │    (126x294 DRM KMS - 4 Páginas)       │
+                      └────────────────────────────────────────┘
 ```
 
-## 🔌 Orquestração (Conexão via USB/ADB)
-Como o dispositivo fica fisicamente plugado via cabo no PC principal (Linux/Fedora), o acesso não depende do Wi-Fi. 
-Um script (Daemon) no PC principal faz o encaminhamento reverso do ADB, expondo todas as portas do ambiente isolado (SSH, WebUI, Streaming, APIs de IA) diretamente para `localhost`.
+### 1. Prime Core Cortex-X1 @ 2.84 GHz (`lupin-power`)
+* Controle fino de frequência e governança de energia (`lupin-power idle`, `balanced`, `burst`).
+* **Idle:** Núcleos LITTLE (A55) a 300 MHz, A78/X1 em powersave (consumo $< 0.8\text{W}$).
+* **Burst:** Disparo instantâneo do Cortex-X1 no clock máximo (2.84 GHz) com afinidade de processo via `sched_setaffinity`.
+* **Governador Térmico Closed-Loop:** Monitoramento contínuo em malha fechada. Limiares de segurança (bateria $< 35^\circ\text{C}$, CPU $< 65^\circ\text{C}$), controle de histerese e acionamento ativo da caixa Peltier.
+
+### 2. NPU Qualcomm Hexagon 780 cDSP (`crates/lupinos-fastrpc`)
+* Comunicação direta via ioctl FastRPC Linux (`/dev/msm_fastrpc-2`, cDSP Domain 3).
+* Memória compartilhada zero-copy via DMA-BUF (`/dev/dma_heap/system` e `/dev/ion`).
+* Servidor HTTP nativo na porta `:8091` com endpoints compatíveis com OpenAI:
+  * `GET /health` — Status da NPU e modo de operação (real/simulado).
+  * `GET /metrics` — Latência, tokens/s e uso de memória.
+  * `POST /v1/chat/completions` — Inferência local na NPU com fallback automático para `llama-server` na porta `:8080`.
+
+### 3. GPU Adreno 660 Vulkan 1.3 UMA
+* Driver open-source Mesa Turnip mapeado diretamente em `/dev/kgsl-3d0`.
+* Alocador de Memória Unificada (`uma_allocator.cpp`) com buffers `HOST_VISIBLE` e `DEVICE_LOCAL`, permitindo que tensores e KV-cache sejam compartilhados sem tráfego de barramento PCI/RAM.
 
 ---
 
-## 🏆 Conclusão
-O *Projeto Cavalo de Fogo* prova que não precisamos aceitar a obsolescência programada ou os limites comerciais dos sistemas móveis. Com um pouco de "gambiarra de alto nível" e engenharia raiz, um smartphone usado vira um servidor formidável, capaz de rivalizar com hardwares que custam 10x mais.
+## 📺 HUD AMOLED Traseiro 1.1" (126x294)
 
-## 🐺 LupinOS v3: Extreme Silicon Layer
-A versão v3 introduz o **Extreme Silicon Layer**, abandonando stubs de nuvem e focando na integração direta e real com o hardware Qualcomm do Mi 11 Ultra:
+O display secundário traseiro opera através de DRM KMS atômico puro (`/dev/dri/card0`, Connector 64, CRTC 208) sem depender de bibliotecas gráficas pesadas:
 
-- **Hexagon 780 cDSP via FastRPC:** Integração real (`/dev/msm_fastrpc-2`) com as bibliotecas nativas de 64 bits (`libcdsprpc.so`) do diretório `/vendor_real`, com suporte a DMA-BUF (Zero-Copy) para tensores de IA utilizando a moderna alocação `/dev/dma_heap` com fallback para `/dev/ion`.
-- **Sub-Display AMOLED HUD:** Um daemon nativo em C (`lupin_subdisplay_hud`) operando em `/dev/dri/card0` que aproveita o painel traseiro OLED de 1.1" do Mi 11 Ultra para telemetria em tempo real (Bateria, IPs, Temps e Carga) com uso de CPU próximo a zero, sem depender de pilhas gráficas como o Android SurfaceFlinger.
-
-- **Vetorização NEON Cortex-X1:** Kernels matemáticos intensivos (RMSNorm, SwiGLU, e INT8 DotProd) escritos em C com `<arm_neon.h>`, utilizando as instruções ARMv8.4-A Dot Product, fixados nativamente no Core 7 (Cortex-X1 @ 2.84 GHz).
-- **Lupin Native Guardian:** Daemon supervisor bare-metal unificado (em C) encarregado da gestão térmica agressiva (Peltier lock <65C), provisionamento de 12GB de ZRAM, bloqueio de wakelocks USB, montagem sentinela de `/data` e inicialização do ambiente DSP nativo da Qualcomm.
-
-## ⚡ Lupin OS Soberano v4 — Controle Total
-A versão v4 implementa o controle Soberano e absoluto sobre a máquina, eliminando desperdício térmico e ativando os motores de aceleração de hardware:
-- **Governors Finos de CPU (Deep Idle -> Burst):** Implementação via sysfs com a ferramenta CLI `lupin-power`, permitindo trancar os núcleos A55/A78 em idle e disparar o Cortex-X1 para bursts curtos e eficientes.
-- **Watchdog de Rede com Failover:** Daemon interno (`net_watchdog.c`) integrado ao Guardian que detecta interfaces USB/OTG (`eth0`, `rndis0`, `usb0`) e levanta IPs fixos (192.168.31.101 ou 192.168.1.10) de forma automática.
-- **Display Double-Buffering Landscape:** Subdisplay reescrito (`drm_subdisplay.c`) para usar `DRM_IOCTL_MODE_PAGE_FLIP` para eliminar tearing, e mapeando as coordenadas lógicas 294x126 (landscape) no painel físico 126x294 de forma nativa.
-- **NPU Hexagon IPC:** Conexão cDSP FastRPC integrada com um Socket Unix local (`/tmp/lupin_npu.sock`) para inferência de alta performance sem cópia (zero-copy via DMA-BUF).
-
-Para mais detalhes sobre a comunicação com o silício, consulte [QUALCOMM_SILICON_ARCHITECTURE.md](docs/QUALCOMM_SILICON_ARCHITECTURE.md).
+* **4 Páginas Rotativas com Indicador `[X/4]`:**
+  * **Página 1 `[1/4]` — Sistema:** Temperaturas (CPU/Bateria), RAM livre, ZRAM 12GB e Load Average.
+  * **Página 2 `[2/4]` — IA & NPU:** Estado do Hexagon 780, inferências/s, modo de execução e LoRA ativo.
+  * **Página 3 `[3/4]` — Rede:** IP local, IP Tailscale, taxa de transferência e status de failover anti-flap.
+  * **Página 4 `[4/4]` — Status:** Governador de energia ativo, tempo de atividade (uptime) e limites térmicos.
+* **Backlight Adaptativo Auto-Dim:**
+  * $100\%$ de brilho durante atividade ou comandos.
+  * Auto-dim para $30\%$ após 60 segundos de inatividade.
+  * Auto-off ($0\%$) após 300 segundos de inatividade.
+* **Controle por Socket UNIX (`/run/lupin/hud.sock`):**
+  * `lupinctl hud next` / `prev` — Troca manual de página.
+  * `lupinctl hud dim` / `on` — Ajuste de iluminação.
+  * `lupinctl hud status` — Leitura do estado atual do display.
 
 ---
-*Escrito e Arquitetado por Filipe (Zeusdin) & Cluster Lupin.*
 
-## 🚀 Casos de Uso Reais (Aplicações Práticas)
-O verdadeiro poder dessa arquitetura é que ela não é apenas uma "prova de conceito" teórica; ela é uma infraestrutura edge viável e pronta para produção:
+## 🧬 Gerenciador de Adaptadores LoRA em Rust
 
-1. **Servidor de Mídia Edge Privado:** Sistema de streaming de vídeo sob demanda, construído em Python, capaz de servir e transcodificar mídias (`ffmpeg`) via HLS diretamente do armazenamento local, integrado a uma malha segura (Tailscale).
-2. **Nó de IA Híbrido (Local & Nuvem):** Hospedagem de modelos LLM open-source (Llama 3.2 e Gemma 4) operando diretamente na VRAM/LPDDR5 com custo zero de inferência. O ambiente também atua como um host ultrarrápido nativo para agentes como o **Antigravity CLI (Google)**, unindo a inteligência da nuvem com o controle do hardware bare-metal.
-3. **Servidor de Computação Gráfica e Cloud Gaming:** Uso de servidores Wayland/Sunshine rodando bare-metal para renderizar motores gráficos de PC (via Vulkan e Box64) e fazer o stream para displays locais com latência quase nula.
+Implementado nativamente em `crates/lupinos-daemon/src/lora_manager.rs`:
+* Carregamento a quente e troca de adaptadores LoRA sem reiniciar o modelo base.
+* Conversão automática on-the-fly de adaptadores PEFT (`.bin` / `.safetensors`) para formato GGUF compatível com `llama.cpp`.
+* Endpoints HTTP no daemon:
+  * `POST /lora/load` — `{ "name": "...", "path": "..." }`
+  * `GET /lora/list` — Retorna adaptadores carregados e ativo.
+  * `POST /lora/unload` — `{ "name": "..." }`
+* CLI dedicado: `lupinctl lora load|list|unload`.
+
+---
+
+## 🛡️ Boot A/B Endurecido com Rollback Automático
+
+Para garantir que o dispositivo nunca sofra *brick* ou fique inacessível:
+* Utilitário nativo de baixo nível `tools/lupin_slot_ctl.c`.
+* Contador atômico persistente de falhas de boot.
+* Se o boot falhar por 3 vezes consecutivas antes de alcançar o marco de userspace, o sistema executa **rollback automático para o slot alternativo bootável**.
+* Verificação rigorosa de integridade SHA-256 da imagem antes de autorizar a gravação.
+* Chamada automática de `lupin_slot_ctl mark-success` pelo `init.recovery.service.rc` assim que os daemons essenciais sobem com sucesso.
+
+---
+
+## 🛠️ Plano de Controle do Lupin OS (`lupinctl`)
+
+O `lupinctl` é a interface unificada de comando do operador e dos agentes:
+
+```bash
+# Telemetria geral e status de silício (formato legível ou JSON)
+lupinctl status
+lupinctl status --json
+
+# Controle de energia e governors
+lupinctl power idle
+lupinctl power balanced
+lupinctl power burst "meu_comando_pesado"
+
+# Controle térmico e leitura de sensores
+lupinctl thermal status
+
+# Controle do display traseiro
+lupinctl hud next
+lupinctl hud on
+lupinctl hud dim
+
+# Gerenciamento de adaptadores LoRA
+lupinctl lora list
+lupinctl lora load coder_v1 /data/models/lora_coder.gguf
+lupinctl lora unload coder_v1
+```
+
+O daemon também expõe métricas de telemetria compatíveis com Prometheus na porta `:9100/metrics`.
+
+---
+
+## 🏗️ Compilação e Deploy (CI/CD na Nuvem)
+
+Por diretriz estrita da Orquestra Lupin, **nenhuma compilação pesada é realizada na máquina de desenvolvimento local**. Todo o processo de build é executado via GitHub Actions:
+
+```
+[Git Push Tag v*] ──► [GitHub Actions Ubuntu AArch64]
+                              │
+                              ├─► Compilação cruzada dos binários C (make)
+                              ├─► Testes de unidade em Rust (cargo test)
+                              ├─► Testes de regressão host-runnable (test_sovereign_control.sh)
+                              ├─► Montagem da imagem de boot (build_os_v6.py)
+                              ├─► Assinatura AVB 2.0 (192 MB exatos)
+                              │
+                              ▼
+                  [Artifacts / GitHub Release v6]
+```
+
+### Disparo Manual via GitHub CLI:
+```bash
+gh workflow run build-lupinos-v6.yml
+```
+
+### Montagem Local da Imagem (Opcional):
+```bash
+python3 tools/build_os_v6.py \
+    --boot base_boot.img \
+    --guardian bin/lupinos_guard \
+    --hud bin/lupin_subdisplay_hud \
+    --power bin/lupin-power \
+    --lupinctl bin/lupinctl \
+    --slot-ctl bin/lupin_slot_ctl \
+    --out lupin_baremetal_star_v6_sovereign.img
+```
+
+---
+
+## 📜 Histórico de Versões
+
+* **v1 — v3 (Fase Chroot / Legada):** Primeiro protótipo de Linux direto no metal ancorado no ramdisk do TWRP.
+* **v4 — v5 (Fase de Transição):** Expurgo físico do TWRP, desenvolvimento dos drivers DRM KMS para a tela traseira e primeiros governadores de CPU.
+* **v6 (Soberania Autônoma — Versão Atual):**
+  * Eliminação de 100% dos resquícios legados (14 alvos TWRP removidos).
+  * Boot A/B com proteção ativa e rollback automático.
+  * Integração completa da NPU Hexagon 780 via FastRPC com API HTTP compatível com OpenAI.
+  * Gerenciador dinâmico de LoRA em Rust.
+  * HUD traseiro com 4 páginas rotativas, dirty-rects e auto-dim.
+  * Governador térmico em malha fechada e integração com Peltier.
+
+---
+*Desenvolvido pela Matilha Lupin & Orquestra Autônoma de Silício.*

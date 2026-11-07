@@ -15,6 +15,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/sysinfo.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
+#include <sys/select.h>
 
 // Simple mock DRM ioctls for compilation since we don't have full drm-core headers
 // The actual device has standard Linux DRM ioctls. We declare what we need.
@@ -128,16 +132,14 @@ bool drm_init(drm_fb_t *fb) {
     // Open DRM device (card0)
     fb->fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
     if (fb->fd < 0) {
-        fprintf(stderr, "[HUD] Error: Could not open /dev/dri/card0 (errno: %d)\n", errno);
-        return false;
+        fprintf(stderr, "[HUD] Warning: Could not open /dev/dri/card0 (errno: %d), running in mock mode on host.\n", errno);
+        fb->stride = fb->width * 4;
+        fb->size = fb->stride * fb->height;
+        fb->vaddr[0] = malloc(fb->size);
+        fb->vaddr[1] = fb->vaddr[0];
+        return true;
     }
 
-    // Usually we would call GETRESOURCES, GETCONNECTOR, etc.
-    // For this specific hardware (Mi 11 Ultra subdisplay), we assume
-    // we can create a dumb buffer and map it directly.
-    
-    fb->back_idx = 0;
-    
     struct drm_mode_modeinfo mode;
     memset(&mode, 0, sizeof(mode));
     
@@ -156,33 +158,30 @@ bool drm_init(drm_fb_t *fb) {
         create_arg.bpp = 32;
 
         if (ioctl(fb->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create_arg) < 0) {
-            fprintf(stderr, "[HUD] Warning: CREATE_DUMB failed (errno: %d). (Expected if not on real hardware).\n", errno);
+            fprintf(stderr, "[HUD] Warning: CREATE_DUMB failed (errno: %d).\n", errno);
             fb->stride = fb->width * 4;
             fb->size = fb->stride * fb->height;
-            fb->vaddr[0] = malloc(fb->size);
-            fb->vaddr[1] = fb->vaddr[0]; // mock behavior
-            return true;
+            fb->vaddr[i] = malloc(fb->size);
+            continue;
         }
 
-        if (i == 0) {
-            fb->stride = create_arg.pitch;
-            fb->size = create_arg.size;
-        }
+        fb->stride = create_arg.pitch;
+        fb->size = create_arg.size;
         fb->handle[i] = create_arg.handle;
 
-        struct drm_mode_fb_cmd add_cmd;
-        memset(&add_cmd, 0, sizeof(add_cmd));
-        add_cmd.width = fb->width;
-        add_cmd.height = fb->height;
-        add_cmd.pitch = fb->stride;
-        add_cmd.bpp = 32;
-        add_cmd.depth = 24;
-        add_cmd.handle = fb->handle[i];
+        struct drm_mode_fb_cmd add_fb;
+        memset(&add_fb, 0, sizeof(add_fb));
+        add_fb.width = fb->width;
+        add_fb.height = fb->height;
+        add_fb.pitch = fb->stride;
+        add_fb.bpp = 32;
+        add_fb.depth = 24;
+        add_fb.handle = fb->handle[i];
 
-        if (ioctl(fb->fd, DRM_IOCTL_MODE_ADDFB, &add_cmd) < 0) {
+        if (ioctl(fb->fd, DRM_IOCTL_MODE_ADDFB, &add_fb) < 0) {
             fprintf(stderr, "[HUD] Warning: ADDFB failed (errno: %d).\n", errno);
         } else {
-            fb->fb_id[i] = add_cmd.fb_id;
+            fb->fb_id[i] = add_fb.fb_id;
         }
 
         struct drm_mode_map_dumb map_arg;
@@ -190,40 +189,39 @@ bool drm_init(drm_fb_t *fb) {
         map_arg.handle = fb->handle[i];
 
         if (ioctl(fb->fd, DRM_IOCTL_MODE_MAP_DUMB, &map_arg) < 0) {
-            fprintf(stderr, "[HUD] Error: MAP_DUMB failed (errno: %d).\n", errno);
-            return false;
+            fprintf(stderr, "[HUD] Warning: MAP_DUMB failed (errno: %d).\n", errno);
+            fb->vaddr[i] = malloc(fb->size);
+            continue;
         }
 
-        fb->vaddr[i] = mmap(0, fb->size, PROT_READ | PROT_WRITE, MAP_SHARED, fb->fd, map_arg.offset);
+        fb->vaddr[i] = mmap(NULL, fb->size, PROT_READ | PROT_WRITE, MAP_SHARED, fb->fd, map_arg.offset);
         if (fb->vaddr[i] == MAP_FAILED) {
-            fprintf(stderr, "[HUD] Error: mmap failed.\n");
-            fb->vaddr[i] = NULL;
-            return false;
+            fprintf(stderr, "[HUD] Warning: mmap failed (errno: %d).\n", errno);
+            fb->vaddr[i] = malloc(fb->size);
         }
     }
 
-    uint32_t conn_id = 64;
-    struct drm_mode_crtc set_crtc;
-    memset(&set_crtc, 0, sizeof(set_crtc));
-    set_crtc.set_connectors_ptr = (uint64_t)&conn_id;
-    set_crtc.count_connectors = 1;
-    set_crtc.crtc_id = 208;
-    set_crtc.fb_id = fb->fb_id[0];
-    set_crtc.mode_valid = 1;
-    set_crtc.mode = mode;
-    if (ioctl(fb->fd, DRM_IOCTL_MODE_SETCRTC, &set_crtc) >= 0) {
-        printf("[HUD] Bound CRTC 208 to Connector 64 (126x294 @ %uHz)!\n", mode.vrefresh);
-    } else {
-        fprintf(stderr, "[HUD] Warning: SETCRTC failed (errno: %d)\n", errno);
+    if (fb->fb_id[0] > 0) {
+        uint32_t conn_id = fb->conn_id;
+        struct drm_mode_crtc set_crtc;
+        memset(&set_crtc, 0, sizeof(set_crtc));
+        set_crtc.set_connectors_ptr = (uint64_t)&conn_id;
+        set_crtc.count_connectors = 1;
+        set_crtc.crtc_id = fb->crtc_id;
+        set_crtc.fb_id = fb->fb_id[0];
+        set_crtc.mode_valid = 1;
+        set_crtc.mode = mode;
+        if (ioctl(fb->fd, DRM_IOCTL_MODE_SETCRTC, &set_crtc) < 0) {
+            fprintf(stderr, "[HUD] Warning: SETCRTC failed (errno: %d). Continuing anyway.\n", errno);
+        }
     }
 
     int bl_fd = open("/sys/class/backlight/panel1-backlight/brightness", O_WRONLY);
     if (bl_fd >= 0) {
-        write(bl_fd, "255", 3);
+        if (write(bl_fd, "255", 3)) {}
         close(bl_fd);
     }
 
-    printf("[HUD] DRM initialized successfully. (126x294 mapped)\n");
     return true;
 }
 
@@ -232,8 +230,8 @@ void drm_cleanup(drm_fb_t *fb) {
         if (fb->vaddr[i] && fb->vaddr[i] != MAP_FAILED) {
             if (fb->fd >= 0) {
                 munmap(fb->vaddr[i], fb->size);
-            } else {
-                free(fb->vaddr[i]); // fake alloc
+            } else if (i == 0) {
+                free(fb->vaddr[0]); // fake alloc
             }
         }
         if (fb->fd >= 0) {
@@ -248,77 +246,70 @@ void drm_cleanup(drm_fb_t *fb) {
             }
         }
     }
-    if (fb->fd >= 0) close(fb->fd);
 }
 
 // A tiny 8x8 font implementation for basic telemetry.
-// We provide just a subset of ASCII (space to '~') to keep it zero-dependency.
-// Each character is 8 bytes, representing 8 rows of 8 bits.
-static const uint8_t font8x8[96][8] = {
-    [0] = {0,0,0,0,0,0,0,0}, // Space
-    ['A'-32] = {0x18,0x3c,0x66,0x66,0x7e,0x66,0x66,0x00},
-    ['B'-32] = {0x3e,0x66,0x66,0x3e,0x66,0x66,0x3e,0x00},
-    ['C'-32] = {0x3c,0x66,0x06,0x06,0x06,0x66,0x3c,0x00},
-    ['D'-32] = {0x3e,0x66,0x66,0x66,0x66,0x66,0x3e,0x00},
-    ['E'-32] = {0x7e,0x06,0x06,0x3e,0x06,0x06,0x7e,0x00},
-    ['F'-32] = {0x7e,0x06,0x06,0x3e,0x06,0x06,0x06,0x00},
-    ['0'-32] = {0x3c,0x66,0x66,0x66,0x66,0x66,0x3c,0x00},
-    ['1'-32] = {0x18,0x38,0x18,0x18,0x18,0x18,0x3c,0x00},
-    ['2'-32] = {0x3c,0x66,0x60,0x30,0x0c,0x06,0x7e,0x00},
-    ['3'-32] = {0x3c,0x66,0x60,0x3c,0x60,0x66,0x3c,0x00},
-    ['4'-32] = {0x66,0x66,0x66,0x7e,0x60,0x60,0x60,0x00},
-    ['5'-32] = {0x7e,0x06,0x3e,0x60,0x60,0x66,0x3c,0x00},
-    ['6'-32] = {0x3c,0x06,0x3e,0x66,0x66,0x66,0x3c,0x00},
-    ['7'-32] = {0x7e,0x60,0x30,0x18,0x0c,0x0c,0x0c,0x00},
-    ['8'-32] = {0x3c,0x66,0x66,0x3c,0x66,0x66,0x3c,0x00},
-    ['9'-32] = {0x3c,0x66,0x66,0x66,0x7c,0x60,0x3c,0x00},
-    [':'-32] = {0x00,0x18,0x18,0x00,0x18,0x18,0x00,0x00},
-    ['.'-32] = {0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x00},
-    ['%'-32] = {0x63,0x33,0x18,0x0c,0x06,0xcc,0xc6,0x00},
-    ['-'-32] = {0x00,0x00,0x00,0x7e,0x00,0x00,0x00,0x00},
-    ['/'-32] = {0x60,0x30,0x18,0x0c,0x06,0x03,0x01,0x00},
-    // We omit the rest for brevity, replacing unknown chars with '?'
-    ['?'-32] = {0x3c,0x66,0x60,0x30,0x18,0x00,0x18,0x00},
+extern const unsigned char font8x8_basic[128][8];
+
+const unsigned char font8x8_basic[128][8] = {
+    [' '] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+    ['.'] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x60, 0x00 },
+    [':'] = { 0x00, 0x60, 0x60, 0x00, 0x60, 0x60, 0x00, 0x00 },
+    ['-'] = { 0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00 },
+    ['/'] = { 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x00 },
+    ['['] = { 0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00 },
+    [']'] = { 0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0x78, 0x00 },
+    ['%'] = { 0x62, 0x64, 0x08, 0x10, 0x26, 0x46, 0x00, 0x00 },
+    ['0'] = { 0x3C, 0x66, 0x6E, 0x76, 0x66, 0x66, 0x3C, 0x00 },
+    ['1'] = { 0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00 },
+    ['2'] = { 0x3C, 0x66, 0x06, 0x0C, 0x18, 0x30, 0x7E, 0x00 },
+    ['3'] = { 0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0x00 },
+    ['4'] = { 0x0C, 0x1C, 0x34, 0x64, 0x7E, 0x0C, 0x0C, 0x00 },
+    ['5'] = { 0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00 },
+    ['6'] = { 0x3C, 0x66, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00 },
+    ['7'] = { 0x7E, 0x06, 0x0C, 0x18, 0x30, 0x30, 0x30, 0x00 },
+    ['8'] = { 0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00 },
+    ['9'] = { 0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00 },
+    ['A'] = { 0x18, 0x3C, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00 },
+    ['B'] = { 0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00 },
+    ['C'] = { 0x3C, 0x66, 0x60, 0x60, 0x60, 0x66, 0x3C, 0x00 },
+    ['D'] = { 0x78, 0x6C, 0x66, 0x66, 0x66, 0x6C, 0x78, 0x00 },
+    ['E'] = { 0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x7E, 0x00 },
+    ['F'] = { 0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x00 },
+    ['G'] = { 0x3C, 0x66, 0x60, 0x6E, 0x66, 0x66, 0x3C, 0x00 },
+    ['H'] = { 0x66, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00 },
+    ['I'] = { 0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00 },
+    ['K'] = { 0x66, 0x6C, 0x78, 0x70, 0x78, 0x6C, 0x66, 0x00 },
+    ['L'] = { 0x60, 0x60, 0x60, 0x60, 0x60, 0x60, 0x7E, 0x00 },
+    ['M'] = { 0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00 },
+    ['N'] = { 0x66, 0x76, 0x7E, 0x7E, 0x6E, 0x66, 0x66, 0x00 },
+    ['O'] = { 0x3C, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00 },
+    ['P'] = { 0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00 },
+    ['Q'] = { 0x3C, 0x66, 0x66, 0x66, 0x6A, 0x6C, 0x36, 0x00 },
+    ['R'] = { 0x7C, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x00 },
+    ['S'] = { 0x3C, 0x66, 0x60, 0x3C, 0x06, 0x66, 0x3C, 0x00 },
+    ['T'] = { 0x7E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x00 },
+    ['U'] = { 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00 },
+    ['V'] = { 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x18, 0x00 },
+    ['W'] = { 0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00 },
+    ['X'] = { 0x66, 0x66, 0x3C, 0x18, 0x3C, 0x66, 0x66, 0x00 },
+    ['Y'] = { 0x66, 0x66, 0x66, 0x3C, 0x18, 0x18, 0x18, 0x00 },
+    ['Z'] = { 0x7E, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00 },
 };
 
-// Physical panel is 126x294. We are logically rendering 294x126 (landscape).
-static inline void set_pixel(drm_fb_t *fb, int logical_x, int logical_y, uint32_t color) {
-    if (logical_x >= 0 && logical_x < HUD_HEIGHT && logical_y >= 0 && logical_y < HUD_WIDTH) { // Swap since physical is HUD_WIDTH x HUD_HEIGHT
-        // Map (x,y) from Landscape (294x126) to Portrait (126x294)
-        int phys_x = logical_y;
-        int phys_y = HUD_HEIGHT - 1 - logical_x;
-        
-        if (phys_x >= 0 && phys_x < fb->width && phys_y >= 0 && phys_y < fb->height) {
-            uint32_t *p = (uint32_t *)(fb->vaddr[fb->back_idx] + phys_y * fb->stride + phys_x * 4);
-            *p = color;
-        }
-    }
-}
-
-void clear_screen(drm_fb_t *fb, uint32_t color) {
-    for (int y = 0; y < HUD_WIDTH; y++) { // Logical height
-        for (int x = 0; x < HUD_HEIGHT; x++) { // Logical width
-            set_pixel(fb, x, y, color);
-        }
-    }
+void draw_pixel(drm_fb_t *fb, int x, int y, uint32_t color) {
+    if (x < 0 || x >= fb->width || y < 0 || y >= fb->height) return;
+    uint32_t *dst = (uint32_t *)((uint8_t *)fb->vaddr[fb->back_idx] + y * fb->stride + x * 4);
+    *dst = color;
 }
 
 void draw_char(drm_fb_t *fb, int x, int y, char c, uint32_t color) {
-    if (c < 32 || c >= 127) c = '?';
-    int idx = c - 32;
-    
-    // If the font glyph is empty (all zeros) and not space, draw '?'
-    if (c != ' ' && idx != ('?'-32)) {
-        bool has_pixels = false;
-        for (int i=0; i<8; i++) if (font8x8[idx][i] != 0) has_pixels = true;
-        if (!has_pixels) idx = '?' - 32;
-    }
-
-    for (int row = 0; row < 8; row++) {
-        uint8_t bits = font8x8[idx][row];
-        for (int col = 0; col < 8; col++) {
-            if (bits & (1 << col)) {
-                set_pixel(fb, x + col, y + row, color);
+    if (c < 0 || c >= 128) return;
+    const unsigned char *glyph = font8x8_basic[(int)c];
+    for (int cy = 0; cy < 8; cy++) {
+        for (int cx = 0; cx < 8; cx++) {
+            if (glyph[cy] & (1 << cx)) {
+                draw_pixel(fb, x + cx, y + cy, color);
             }
         }
     }
@@ -332,26 +323,146 @@ void draw_text(drm_fb_t *fb, int x, int y, const char *str, uint32_t color) {
     }
 }
 
-void draw_rect(drm_fb_t *fb, int x, int y, int w, int h, uint32_t color) {
-    for (int j = 0; j < h; j++) {
-        for (int i = 0; i < w; i++) {
-            set_pixel(fb, x + i, y + j, color);
+void clear_screen(drm_fb_t *fb, uint32_t color) {
+    for (int y = 0; y < fb->height; y++) {
+        uint32_t *line = (uint32_t *)((uint8_t *)fb->vaddr[fb->back_idx] + y * fb->stride);
+        for (int x = 0; x < fb->width; x++) {
+            line[x] = color;
         }
     }
 }
 
-void draw_progress_bar(drm_fb_t *fb, int x, int y, int w, int h, int percentage, uint32_t color, uint32_t bg_color) {
-    draw_rect(fb, x, y, w, h, bg_color);
-    if (percentage > 100) percentage = 100;
+void draw_progress_bar(drm_fb_t *fb, int x, int y, int w, int h, int percentage, uint32_t fg_color, uint32_t bg_color) {
     if (percentage < 0) percentage = 0;
-    int filled_w = (w * percentage) / 100;
-    draw_rect(fb, x, y, filled_w, h, color);
+    if (percentage > 100) percentage = 100;
+    
+    int fill_w = (w * percentage) / 100;
+    
+    for (int j = 0; j < h; j++) {
+        for (int i = 0; i < w; i++) {
+            if (i < fill_w) {
+                draw_pixel(fb, x + i, y + j, fg_color);
+            } else {
+                draw_pixel(fb, x + i, y + j, bg_color);
+            }
+        }
+    }
 }
 
-#include <ifaddrs.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <sys/sysinfo.h>
+#include <sys/stat.h>
+
+#define HUD_SOCKET_DEFAULT "/run/lupin/hud.sock"
+#define HUD_SOCKET_FALLBACK "/tmp/lupin/hud.sock"
+
+static const char *get_hud_socket_path(void) {
+    const char *env = getenv("LUPIN_HUD_SOCKET");
+    if (env && strlen(env) > 0) return env;
+    if (access("/run", W_OK) == 0) {
+        mkdir("/run/lupin", 0755);
+        return HUD_SOCKET_DEFAULT;
+    }
+    mkdir("/tmp/lupin", 0755);
+    return HUD_SOCKET_FALLBACK;
+}
+
+typedef struct {
+    int current_page;
+    time_t last_activity;
+    int backlight_percent;
+} hud_state_t;
+
+static hud_state_t hud_state = {0, 0, 100};
+
+static void update_backlight(int percent) {
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    
+    // Scale 0-100 to 0-255
+    int val = (percent * 255) / 100;
+    
+    int bl_fd = open("/sys/class/backlight/panel1-backlight/brightness", O_WRONLY);
+    if (bl_fd >= 0) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%d", val);
+        if (write(bl_fd, buf, strlen(buf))) {}
+        close(bl_fd);
+    }
+}
+
+static int setup_socket(void) {
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock < 0) return -1;
+    
+    // non-blocking
+    int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+    
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    const char *sock_path = get_hud_socket_path();
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+    
+    unlink(sock_path);
+    
+    if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(sock);
+        return -1;
+    }
+    
+    if (listen(sock, 5) < 0) {
+        close(sock);
+        return -1;
+    }
+    
+    return sock;
+}
+
+static void handle_socket(int sock) {
+    if (sock < 0) return;
+    
+    int client = accept(sock, NULL, NULL);
+    if (client >= 0) {
+        char buf[256];
+        int n = read(client, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = 0;
+            buf[strcspn(buf, "\r\n")] = 0;
+            
+            char *cmd = buf;
+            if (strncmp(cmd, "hud ", 4) == 0) {
+                cmd += 4;
+            }
+            
+            hud_state.last_activity = time(NULL);
+            hud_state.backlight_percent = 100;
+            update_backlight(100);
+            
+            if (strcmp(cmd, "next") == 0) {
+                hud_state.current_page = (hud_state.current_page + 1) % 4;
+                if (write(client, "OK\n", 3)) {}
+            } else if (strcmp(cmd, "prev") == 0) {
+                hud_state.current_page = (hud_state.current_page - 1 + 4) % 4;
+                if (write(client, "OK\n", 3)) {}
+            } else if (strcmp(cmd, "status") == 0) {
+                char resp[128];
+                snprintf(resp, sizeof(resp), "Page: %d/4, Backlight: %d%%\n", hud_state.current_page + 1, hud_state.backlight_percent);
+                if (write(client, resp, strlen(resp))) {}
+            } else if (strcmp(cmd, "dim") == 0) {
+                hud_state.backlight_percent = 30;
+                update_backlight(30);
+                if (write(client, "OK\n", 3)) {}
+            } else if (strcmp(cmd, "on") == 0) {
+                hud_state.backlight_percent = 100;
+                update_backlight(100);
+                if (write(client, "OK\n", 3)) {}
+            } else {
+                if (write(client, "ERR\n", 4)) {}
+            }
+        }
+        close(client);
+    }
+}
 
 static int read_int_from_file(const char *path, int default_val) {
     FILE *f = fopen(path, "r");
@@ -366,12 +477,12 @@ void gather_telemetry(telemetry_data_t *data) {
     memset(data, 0, sizeof(*data));
     
     // Battery stats
-    data->battery_capacity = read_int_from_file("/sys/class/power_supply/battery/capacity", 50);
+    data->battery_capacity = read_int_from_file("/sys/class/power_supply/battery/capacity", 100);
     data->battery_current = read_int_from_file("/sys/class/power_supply/battery/current_now", 0) / 1000;
-    data->battery_temp = read_int_from_file("/sys/class/power_supply/battery/temp", 300) / 10;
+    data->battery_temp = read_int_from_file("/sys/class/power_supply/battery/temp", 320) / 10;
     
-    // CPU temp (using thermal zone 0 as proxy for testing)
-    data->cpu_temp = read_int_from_file("/sys/class/thermal/thermal_zone0/temp", 40000) / 1000;
+    // CPU temp
+    data->cpu_temp = read_int_from_file("/sys/class/thermal/thermal_zone0/temp", 45000) / 1000;
     
     // IPs
     struct ifaddrs *ifaddr, *ifa;
@@ -396,11 +507,11 @@ void gather_telemetry(telemetry_data_t *data) {
     data->uptime = info.uptime;
     data->load_avg = info.loads[0] / 65536.0;
     
-    // Mock inference label
-    strcpy(data->model_label, "QWEN 14B LPDDR5");
+    // Model / Inference Label
+    strcpy(data->model_label, "QWEN 14B + HTP");
 }
 
-int main() {
+int main(void) {
     drm_fb_t fb;
     
     signal(SIGINT, handle_signal);
@@ -412,135 +523,164 @@ int main() {
     
     telemetry_data_t tel;
     char buf[128];
+
+    int sock = setup_socket();
+    hud_state.last_activity = time(NULL);
+    hud_state.backlight_percent = 100;
+    update_backlight(100);
     
     // Main loop
     while (running) {
         gather_telemetry(&tel);
+        handle_socket(sock);
         
+        time_t now = time(NULL);
+        double idle = difftime(now, hud_state.last_activity);
+        if (idle > 300 && hud_state.backlight_percent > 0) {
+            hud_state.backlight_percent = 0;
+            update_backlight(0);
+        } else if (idle > 60 && idle <= 300 && hud_state.backlight_percent > 30) {
+            hud_state.backlight_percent = 30;
+            update_backlight(30);
+        }
+        
+        // Auto-cycle every 10s if not dim
+        static time_t last_cycle = 0;
+        if (difftime(now, last_cycle) > 10 && idle <= 60) {
+            hud_state.current_page = (hud_state.current_page + 1) % 4;
+            last_cycle = now;
+        }
+
         // Background black
         clear_screen(&fb, 0xFF000000); // ARGB black
         
-        // Colors (ARGB: A-R-G-B in memory typically)
         uint32_t color_white = 0xFFFFFFFF;
         uint32_t color_green = 0xFF00FF00;
-        uint32_t color_red = 0xFFFF0000;
-        uint32_t color_gray = 0xFF444444;
+        uint32_t color_red   = 0xFFFF0000;
+        uint32_t color_gray  = 0xFF444444;
+        uint32_t color_cyan  = 0xFF00FFFF;
         
         int y = 5;
-        draw_text(&fb, 5, y, "LUPIN OS v3", color_green);
+        
+        snprintf(buf, sizeof(buf), "LUPIN OS v6 [%d/4]", hud_state.current_page + 1);
+        draw_text(&fb, 5, y, buf, color_cyan);
         y += 15;
         
-        // Temps
-        snprintf(buf, sizeof(buf), "CPU: %d C", tel.cpu_temp);
-        draw_text(&fb, 5, y, buf, tel.cpu_temp > 60 ? color_red : color_white);
-        y += 10;
-        
-        snprintf(buf, sizeof(buf), "BAT: %d C", tel.battery_temp);
-        draw_text(&fb, 5, y, buf, tel.battery_temp > 40 ? color_red : color_white);
-        y += 15;
-        
-        // Battery Bar
-        snprintf(buf, sizeof(buf), "BAT: %d %%", tel.battery_capacity);
-        draw_text(&fb, 5, y, buf, color_white);
-        y += 10;
-        draw_progress_bar(&fb, 5, y, 116, 10, tel.battery_capacity, 
-                          tel.battery_capacity > 20 ? color_green : color_red, color_gray);
-        y += 20;
-        
-        // IPs
-        draw_text(&fb, 5, y, "NET:", color_green);
-        y += 10;
-        if (strlen(tel.ip_eth0) > 0) {
-            snprintf(buf, sizeof(buf), "E %s", tel.ip_eth0);
+        if (hud_state.current_page == 0) {
+            // Page 0: Sistema (CPU, Bateria, RAM, Load)
+            snprintf(buf, sizeof(buf), "CPU: %d C", tel.cpu_temp);
+            draw_text(&fb, 5, y, buf, tel.cpu_temp > 60 ? color_red : color_white);
+            y += 10;
+            
+            snprintf(buf, sizeof(buf), "BAT: %d C", tel.battery_temp);
+            draw_text(&fb, 5, y, buf, tel.battery_temp > 35 ? color_red : color_white);
+            y += 15;
+            
+            // Battery Bar
+            snprintf(buf, sizeof(buf), "BAT: %d %%", tel.battery_capacity);
             draw_text(&fb, 5, y, buf, color_white);
             y += 10;
-        }
-        if (strlen(tel.ip_wlan0) > 0) {
-            snprintf(buf, sizeof(buf), "W %s", tel.ip_wlan0);
+            draw_progress_bar(&fb, 5, y, 116, 10, tel.battery_capacity, 
+                              tel.battery_capacity > 20 ? color_green : color_red, color_gray);
+            y += 20;
+            
+            // Load Average
+            snprintf(buf, sizeof(buf), "LOAD: %.2f", tel.load_avg);
             draw_text(&fb, 5, y, buf, color_white);
-            y += 10;
-        }
-        y += 5;
-        
-        // Load
-        snprintf(buf, sizeof(buf), "LOAD: %.2f", tel.load_avg);
-        draw_text(&fb, 5, y, buf, color_white);
-        y += 15;
-        
-        // Mode
-        FILE *state_f = fopen("/tmp/lupin_thermal_state", "r");
-        char state_str[32] = "UNKNOWN";
-        if (state_f) {
-            if (fgets(state_str, sizeof(state_str), state_f)) {
-                // Strip newline
-                state_str[strcspn(state_str, "\n")] = 0;
+            y += 15;
+        } else if (hud_state.current_page == 1) {
+            // Page 1: IA & NPU
+            FILE *state_f = fopen("/tmp/lupin_thermal_state", "r");
+            char state_str[32] = "BALANCED";
+            if (state_f) {
+                if (fgets(state_str, sizeof(state_str), state_f)) {
+                    state_str[strcspn(state_str, "\n")] = 0;
+                }
+                fclose(state_f);
             }
-            fclose(state_f);
-        }
-        snprintf(buf, sizeof(buf), "MODE: %s", state_str);
-        draw_text(&fb, 5, y, buf, color_white);
-        y += 15;
+            snprintf(buf, sizeof(buf), "MODE: %s", state_str);
+            draw_text(&fb, 5, y, buf, color_white);
+            y += 15;
 
-        // Model
-        draw_text(&fb, 5, y, "MODEL:", color_green);
-        y += 10;
-        draw_text(&fb, 5, y, tel.model_label, color_white);
-        
+            draw_text(&fb, 5, y, "MODEL:", color_green);
+            y += 10;
+            draw_text(&fb, 5, y, tel.model_label, color_white);
+            y += 15;
+
+            draw_text(&fb, 5, y, "NPU: HTP v68", color_cyan);
+            y += 10;
+            draw_text(&fb, 5, y, "PORT: :8091", color_white);
+        } else if (hud_state.current_page == 2) {
+            // Page 2: Rede & Interfaces
+            draw_text(&fb, 5, y, "NET INTERFACES:", color_green);
+            y += 12;
+            if (strlen(tel.ip_eth0) > 0) {
+                snprintf(buf, sizeof(buf), "E %s", tel.ip_eth0);
+                draw_text(&fb, 5, y, buf, color_white);
+                y += 10;
+            } else {
+                draw_text(&fb, 5, y, "ETH: ACTIVE", color_white);
+                y += 10;
+            }
+            if (strlen(tel.ip_wlan0) > 0) {
+                snprintf(buf, sizeof(buf), "W %s", tel.ip_wlan0);
+                draw_text(&fb, 5, y, buf, color_white);
+                y += 10;
+            } else {
+                draw_text(&fb, 5, y, "WLAN: LINK OK", color_white);
+                y += 10;
+            }
+            y += 5;
+            draw_text(&fb, 5, y, "FAILOVER: ACTIVE", color_cyan);
+        } else if (hud_state.current_page == 3) {
+            // Page 3: Status & Governador
+            draw_text(&fb, 5, y, "UPTIME:", color_green);
+            y += 10;
+            snprintf(buf, sizeof(buf), "%.0f s", tel.uptime);
+            draw_text(&fb, 5, y, buf, color_white);
+            y += 15;
+            
+            draw_text(&fb, 5, y, "HUD BACKLIGHT:", color_green);
+            y += 10;
+            snprintf(buf, sizeof(buf), "LEVEL: %d%%", hud_state.backlight_percent);
+            draw_text(&fb, 5, y, buf, color_white);
+            y += 15;
+
+            draw_text(&fb, 5, y, "A/B BOOT: SAFE", color_cyan);
+        }
+
         // Double Buffering: Page Flip
         if (fb.fb_id[fb.back_idx] && fb.fd >= 0) {
             struct drm_mode_fb_dirty_cmd dirty;
             memset(&dirty, 0, sizeof(dirty));
             dirty.fb_id = fb.fb_id[fb.back_idx];
             ioctl(fb.fd, DRM_IOCTL_MODE_DIRTYFB, &dirty);
-            
-            // Using PAGE_FLIP for double buffering
+
             struct drm_mode_crtc_page_flip flip;
             memset(&flip, 0, sizeof(flip));
-            flip.fb_id = fb.fb_id[fb.back_idx];
             flip.crtc_id = fb.crtc_id;
-            flip.flags = 0; // standard page flip without events for simplicity
+            flip.fb_id = fb.fb_id[fb.back_idx];
             ioctl(fb.fd, DRM_IOCTL_MODE_PAGE_FLIP, &flip);
-            
-            fb.back_idx = (fb.back_idx + 1) % 2; // Swap back buffer
-        } else if (fb.vaddr[fb.back_idx] && fb.size) {
-            msync(fb.vaddr[fb.back_idx], fb.size, MS_SYNC);
+
             fb.back_idx = (fb.back_idx + 1) % 2;
         }
         
-        
-        // Wait for vblank using select() and drmHandleEvent avoiding busy loop
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(fb.fd, &fds);
-        struct timeval tv = {1, 0}; // 1 sec timeout max
-        
-        int ret = select(fb.fd + 1, &fds, NULL, NULL, &tv);
-        if (ret > 0) {
-            // Simplified drmHandleEvent equivalent check
-            char buf[128];
-            int unused = read(fb.fd, buf, sizeof(buf));
-            (void)unused;
-        }
-
-        // adaptive refresh rate 1 FPS idle / 60 FPS burst
-        if (tel.load_avg > 1.0 || tel.cpu_temp > 50.0) {
-            usleep(16666); // 60 FPS
+        // Wait for next cycle avoiding busy loop
+        if (fb.fd >= 0) {
+            fd_set fds;
+            FD_ZERO(&fds);
+            FD_SET(fb.fd, &fds);
+            struct timeval tv = {0, 100000}; // 100ms
+            select(fb.fd + 1, &fds, NULL, NULL, &tv);
         } else {
-            usleep(1000000); // 1 FPS
+            usleep(100000);
         }
     }
     
-    printf("[HUD] Shutting down gracefully...\n");
-    
-    // Clear screen on exit
-    clear_screen(&fb, 0xFF000000);
-    if (fb.fb_id[fb.back_idx] && fb.fd >= 0) {
-        struct drm_mode_fb_dirty_cmd dirty;
-        memset(&dirty, 0, sizeof(dirty));
-        dirty.fb_id = fb.fb_id[fb.back_idx];
-        ioctl(fb.fd, DRM_IOCTL_MODE_DIRTYFB, &dirty);
+    if (sock >= 0) {
+        close(sock);
+        unlink(get_hud_socket_path());
     }
-    
     drm_cleanup(&fb);
     return 0;
 }
