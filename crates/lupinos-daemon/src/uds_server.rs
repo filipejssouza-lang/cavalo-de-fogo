@@ -65,6 +65,29 @@ pub fn start_uds_server() {
                                 "hud" => format!("HUD set to {:?}\n", parts.get(1)),
                                 "npu" => format!("NPU set to {:?}\n", parts.get(1)),
                                 "thermal" => format!("Thermal Mode: {}\n", telem.thermal_mode),
+                                "peltier" => {
+                                    match parts.get(1) {
+                                        Some(&"on") => {
+                                            let _ = std::fs::write("/tmp/lupin_peltier_override", "ON\n");
+                                            let _ = std::fs::write("/tmp/lupin_peltier_state", "ACTIVE\n");
+                                            "Peltier Cooler forced ON\n".to_string()
+                                        }
+                                        Some(&"off") => {
+                                            let _ = std::fs::write("/tmp/lupin_peltier_override", "OFF\n");
+                                            let _ = std::fs::write("/tmp/lupin_peltier_state", "STANDBY\n");
+                                            "Peltier Cooler forced OFF\n".to_string()
+                                        }
+                                        Some(&"auto") => {
+                                            let _ = std::fs::remove_file("/tmp/lupin_peltier_override");
+                                            "Peltier Cooler set to AUTO (Governor closed-loop)\n".to_string()
+                                        }
+                                        _ => {
+                                            let state = std::fs::read_to_string("/tmp/lupin_peltier_state")
+                                                .unwrap_or_else(|_| "STANDBY\n".to_string());
+                                            format!("Peltier State: {}", state)
+                                        }
+                                    }
+                                }
                                 "metrics" => telem.to_prometheus(),
                                 _ => "ERROR: Unknown command\n".to_string(),
                             }

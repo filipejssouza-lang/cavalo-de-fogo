@@ -9,8 +9,30 @@
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        printf("Usage: %s <idle|balanced|burst <cmd>|status|thermal status>\n", argv[0]);
+        printf("Usage: %s <idle|balanced|burst <cmd>|status|thermal status|peltier <on|off|auto|status>>\n", argv[0]);
         return 1;
+    }
+
+    if (strcmp(argv[1], "peltier") == 0) {
+        if (argc < 3 || strcmp(argv[2], "status") == 0) {
+            bool active = lupin_power_get_peltier_state();
+            printf("Peltier Cooler State: %s\n", active ? "ACTIVE (COOLING ON)" : "STANDBY (COOLING OFF)");
+            return 0;
+        }
+        if (strcmp(argv[2], "on") == 0) {
+            lupin_power_set_peltier_mode(PELTIER_MODE_ON);
+            printf("Peltier Cooler forced ON.\n");
+        } else if (strcmp(argv[2], "off") == 0) {
+            lupin_power_set_peltier_mode(PELTIER_MODE_OFF);
+            printf("Peltier Cooler forced OFF.\n");
+        } else if (strcmp(argv[2], "auto") == 0) {
+            lupin_power_set_peltier_mode(PELTIER_MODE_AUTO);
+            printf("Peltier Cooler set to AUTO (Closed-Loop Governor).\n");
+        } else {
+            printf("Usage: %s peltier <on|off|auto|status>\n", argv[0]);
+            return 1;
+        }
+        return 0;
     }
 
     if (strcmp(argv[1], "thermal") == 0 && argc == 3 && strcmp(argv[2], "status") == 0) {

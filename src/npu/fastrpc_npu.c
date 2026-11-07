@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <stdint.h>
 #include <time.h>
 #include <linux/dma-buf.h>
@@ -26,7 +27,16 @@ struct dma_heap_allocation_data {
 
 #define DMA_HEAP_IOC_MAGIC 'H'
 #define DMA_HEAP_IOCTL_ALLOC _IOWR(DMA_HEAP_IOC_MAGIC, 0x0, struct dma_heap_allocation_data)
-#define SOCK_PATH "/run/lupin/npu.sock"
+static const char *get_npu_socket_path(void) {
+    const char *env = getenv("LUPIN_NPU_SOCKET");
+    if (env && strlen(env) > 0) return env;
+    if (access("/run", W_OK) == 0) {
+        mkdir("/run/lupin", 0755);
+        return "/run/lupin/npu.sock";
+    }
+    mkdir("/tmp/lupin", 0755);
+    return "/tmp/lupin/npu.sock";
+}
 
 // IOCTL values for FastRPC (simplified for the demonstration, based on general msm_fastrpc)
 #define FASTRPC_IOCTL_INIT_ATTACH _IO('R', 1)
@@ -46,10 +56,12 @@ bool fastrpc_npu_init(void) {
     frpc_fd = open(FASTRPC_DEVICE, O_RDWR);
     if (frpc_fd < 0) {
         perror("Failed to open fastrpc device");
+        is_simulated = true;
         // Fallback for tests if device is absent
         // We will continue so socket IPC can still be tested locally
     } else {
         printf("Connected to %s\n", FASTRPC_DEVICE);
+        is_simulated = false;
         // Domain 3 (cDSP) attach simulation via standard IOCTL
         if (ioctl(frpc_fd, FASTRPC_IOCTL_INIT_ATTACH, 3) < 0) {
             perror("FASTRPC_IOCTL_INIT_ATTACH failed");
@@ -57,7 +69,8 @@ bool fastrpc_npu_init(void) {
         }
     }
 
-    unlink(SOCK_PATH);
+    const char *sock_path = get_npu_socket_path();
+    unlink(sock_path);
     sock_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock_fd < 0) {
         perror("socket");
@@ -67,7 +80,7 @@ bool fastrpc_npu_init(void) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCK_PATH, sizeof(addr.sun_path) - 1);
+    strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
 
     if (bind(sock_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("bind");
@@ -79,7 +92,7 @@ bool fastrpc_npu_init(void) {
         return false;
     }
 
-    printf("NPU IPC Socket ready at %s\n", SOCK_PATH);
+    printf("NPU IPC Socket ready at %s (mode: %s)\n", sock_path, is_simulated ? "simulated" : "real");
     return true;
 }
 
@@ -158,7 +171,7 @@ void fastrpc_npu_loop(void) {
                 const char *mode = is_simulated ? "simulated" : "real";
                 char resp[256];
                 snprintf(resp, sizeof(resp),
-                    "{\"mode\":\"%s\",\"status\":\"ok\",\"tensor_size\":%zu,\"timestamp\":%ld\n",
+                    "{\"mode\":\"%s\",\"status\":\"ok\",\"tensor_size\":%zu,\"timestamp\":%ld}\n",
                     mode, tensor_size, (long)time(NULL));
                 int ret = write(client_fd, resp, strlen(resp));
                 (void)ret;

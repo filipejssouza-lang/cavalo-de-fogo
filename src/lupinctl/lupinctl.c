@@ -9,6 +9,15 @@
 #define SOCKET_PATH "/run/lupin/control.sock"
 #define HUD_SOCKET_PATH "/run/lupin/hud.sock"
 
+static const char *get_control_socket(void) {
+    const char *env = getenv("LUPIN_CONTROL_SOCKET");
+    if (env && strlen(env) > 0) return env;
+    if (access("/run/lupin/control.sock", F_OK) == 0) {
+        return "/run/lupin/control.sock";
+    }
+    return "/tmp/lupin/control.sock";
+}
+
 static const char *get_hud_socket(void) {
     const char *env = getenv("LUPIN_HUD_SOCKET");
     if (env && strlen(env) > 0) return env;
@@ -27,11 +36,12 @@ void print_usage(void) {
     printf("  lupinctl hud <next|prev|status|dim|on>\n");
     printf("  lupinctl npu <start|stop|status>\n");
     printf("  lupinctl thermal <status>\n");
+    printf("  lupinctl peltier <on|off|auto|status>\n");
     printf("  lupinctl lora <load|list|unload> [args...]\n");
 }
 
 int send_command(const char *cmd) {
-    const char *target_socket = SOCKET_PATH;
+    const char *target_socket = get_control_socket();
     
     if (strncmp(cmd, "hud ", 4) == 0) {
         target_socket = get_hud_socket();

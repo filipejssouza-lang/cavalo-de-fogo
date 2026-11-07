@@ -10,7 +10,7 @@
 #include <sys/stat.h>
 
 static void write_file(const char *path, const char *val) {
-    int fd = open(path, O_WRONLY);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd >= 0) {
         write(fd, val, strlen(val));
         close(fd);
@@ -90,15 +90,65 @@ bool lupin_power_balanced(void) {
 }
 
 void lupin_power_set_cooling(bool active) {
-    // Real implementation: scan /sys/class/thermal/ for cooling_device* that is our fan/peltier
-    // For testing/mock environments, we write to a mock file or just a specific sysfs node
+    // Write state file for telemetry and HUD
+    write_file("/tmp/lupin_peltier_state", active ? "ACTIVE\n" : "STANDBY\n");
+
     const char *mock_path = getenv("LUPIN_MOCK_COOLING_NODE");
     if (mock_path) {
         write_file(mock_path, active ? "1" : "0");
-    } else {
-        // Fallback or explicit known path
+        return;
+    }
+
+    // Scan /sys/class/thermal/ for cooling devices (fan, peltier, pwm)
+    bool found = false;
+    for (int i = 0; i < 16; i++) {
+        char type_path[256];
+        char cur_path[256];
+        char max_path[256];
+        char type_buf[64] = {0};
+        char max_buf[16] = "1";
+
+        snprintf(type_path, sizeof(type_path), "/sys/class/thermal/cooling_device%d/type", i);
+        snprintf(cur_path, sizeof(cur_path), "/sys/class/thermal/cooling_device%d/cur_state", i);
+        snprintf(max_path, sizeof(max_path), "/sys/class/thermal/cooling_device%d/max_state", i);
+
+        if (access(type_path, R_OK) == 0) {
+            read_file_to_buf(type_path, type_buf, sizeof(type_buf));
+            read_file_to_buf(max_path, max_buf, sizeof(max_buf));
+            if (strstr(type_buf, "fan") || strstr(type_buf, "peltier") || strstr(type_buf, "pwm") || strstr(type_buf, "cooler")) {
+                write_file(cur_path, active ? max_buf : "0");
+                found = true;
+            }
+        }
+    }
+
+    if (!found) {
+        // Fallback to cooling_device0
         write_file("/sys/class/thermal/cooling_device0/cur_state", active ? "1" : "0");
     }
+}
+
+void lupin_power_set_peltier_mode(lupin_peltier_mode_t mode) {
+    switch (mode) {
+        case PELTIER_MODE_ON:
+            write_file("/tmp/lupin_peltier_override", "ON\n");
+            lupin_power_set_cooling(true);
+            break;
+        case PELTIER_MODE_OFF:
+            write_file("/tmp/lupin_peltier_override", "OFF\n");
+            lupin_power_set_cooling(false);
+            break;
+        case PELTIER_MODE_AUTO:
+        default:
+            unlink("/tmp/lupin_peltier_override");
+            break;
+    }
+}
+
+bool lupin_power_get_peltier_state(void) {
+    char buf[32] = {0};
+    read_file_to_buf("/tmp/lupin_peltier_state", buf, sizeof(buf));
+    return (strstr(buf, "ACTIVE") != NULL);
 }
 
 bool lupin_power_burst(void) {

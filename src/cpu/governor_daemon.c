@@ -11,8 +11,14 @@
 #include "governor_daemon.h"
 
 // Thresholds
-#define TEMP_CPU_CRIT 65000 // 65C
-#define TEMP_BAT_CRIT 350   // 35C
+#define TEMP_CPU_CRIT     65000 // 65C (Emergency Throttle)
+#define TEMP_BAT_CRIT     350   // 35C (Emergency Throttle)
+
+#define TEMP_CPU_COOL_ON  55000 // 55C (Proactive Peltier ON)
+#define TEMP_BAT_COOL_ON  330   // 33C (Proactive Peltier ON)
+
+#define TEMP_CPU_COOL_OFF 48000 // 48C (Cooler OFF threshold)
+#define TEMP_BAT_COOL_OFF 300   // 30C (Anti-Condensation Safe OFF)
 
 static int read_int_from_file(const char *path, int default_val) {
     FILE *f = fopen(path, "r");
@@ -51,6 +57,35 @@ void governor_daemon_loop(void) {
 
         bool overheating = (cpu_temp > TEMP_CPU_CRIT) || (bat_temp > TEMP_BAT_CRIT);
 
+        // Check for manual override from lupinctl / lupin-power
+        char override_buf[32] = {0};
+        FILE *f_override = fopen("/tmp/lupin_peltier_override", "r");
+        if (f_override) {
+            if (fgets(override_buf, sizeof(override_buf), f_override)) {
+                override_buf[strcspn(override_buf, "\r\n")] = '\0';
+            }
+            fclose(f_override);
+        }
+
+        bool cooling_desired = false;
+        if (strcmp(override_buf, "ON") == 0) {
+            cooling_desired = true;
+        } else if (strcmp(override_buf, "OFF") == 0) {
+            cooling_desired = false;
+        } else {
+            // Proactive Closed-Loop Policy:
+            if (cpu_temp >= TEMP_CPU_COOL_ON || bat_temp >= TEMP_BAT_COOL_ON || overheating) {
+                cooling_desired = true;
+            } else if (bat_temp <= TEMP_BAT_COOL_OFF && cpu_temp <= TEMP_CPU_COOL_OFF) {
+                // Anti-condensation safe cutoff
+                cooling_desired = false;
+            } else {
+                // Hysteresis deadband: maintain current state
+                cooling_desired = lupin_power_get_peltier_state();
+            }
+        }
+        lupin_power_set_cooling(cooling_desired);
+
         // Forced Idle on overheating
         if (overheating) {
             if (current_mode != LUPIN_POWER_IDLE) {
@@ -58,15 +93,7 @@ void governor_daemon_loop(void) {
                 current_mode = LUPIN_POWER_IDLE;
                 write_status_file("IDLE (THERMAL THROTTLE)");
             }
-            lupin_power_set_cooling(true); // Enable active cooling
         } else {
-            lupin_power_set_cooling(false); // Disable cooling if under thresholds
-            
-            // For autonomous mode, default to BALANCED unless there is a burst requirement
-            // To detect "load", we can read loadavg or just default to BALANCED when not overheating
-            // In a real system, BURST is toggled by lupin-power explicitly, which sets mode.
-            // Daemon should not overwrite BURST unless overheating or cooldown passed.
-            
             // Check if another process requested burst via file (simple IPC for testing)
             FILE *f = fopen("/tmp/lupin_req_burst", "r");
             if (f) {
