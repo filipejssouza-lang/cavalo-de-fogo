@@ -694,7 +694,21 @@ int main(void) {
             // Load Average
             snprintf(buf, sizeof(buf), "LOAD: %.2f", tel.load_avg);
             draw_text(&fb, 5, y, buf, color_white);
-            y += 14;
+            y += 12;
+
+            // Peltier Cooling Status
+            FILE *peltier_f = fopen("/tmp/lupin_peltier_state", "r");
+            char peltier_str[16] = "STANDBY";
+            if (peltier_f) {
+                if (fgets(peltier_str, sizeof(peltier_str), peltier_f)) {
+                    peltier_str[strcspn(peltier_str, "\r\n")] = 0;
+                }
+                fclose(peltier_f);
+            }
+            bool is_peltier_active = (strcmp(peltier_str, "ACTIVE") == 0);
+            snprintf(buf, sizeof(buf), "COOL: %s", peltier_str);
+            draw_text(&fb, 5, y, buf, is_peltier_active ? color_green : color_gray);
+            y += 12;
 
             // CPU Temp Sparkline
             draw_text(&fb, 5, y, "CPU HIST [C]:", color_cyan);
@@ -751,6 +765,22 @@ int main(void) {
                 y += 10;
             }
             y += 5;
+            FILE *net_f = fopen("/tmp/lupin_net_state", "r");
+            char net_status[64] = "STANDBY";
+            if (net_f) {
+                char line[64];
+                while (fgets(line, sizeof(line), net_f)) {
+                    if (strncmp(line, "STATUS=", 7) == 0) {
+                        snprintf(net_status, sizeof(net_status), "%s", line + 7);
+                        net_status[strcspn(net_status, "\r\n")] = 0;
+                        break;
+                    }
+                }
+                fclose(net_f);
+            }
+            snprintf(buf, sizeof(buf), "LINK: %s", net_status);
+            draw_text(&fb, 5, y, buf, strcmp(net_status, "ONLINE") == 0 ? color_green : color_yellow);
+            y += 10;
             draw_text(&fb, 5, y, "FAILOVER: ACTIVE", color_cyan);
         } else if (hud_state.current_page == 3) {
             // Page 3: Emblema Oficial & Status do Sistema

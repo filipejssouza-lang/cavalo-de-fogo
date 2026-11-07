@@ -13,6 +13,8 @@ pub struct SiliconTelemetry {
     pub zram_orig_bytes: u64,
     pub zram_compr_bytes: u64,
     pub thermal_mode: String,
+    pub peltier_state: String,
+    pub net_status: String,
 }
 
 impl SiliconTelemetry {
@@ -87,6 +89,21 @@ impl SiliconTelemetry {
         let thermal_mode = Self::read_trimmed("/tmp/lupin_thermal_state")
             .unwrap_or_else(|| "BALANCED".to_string());
 
+        // Peltier cooler state
+        let peltier_state = Self::read_trimmed("/tmp/lupin_peltier_state")
+            .unwrap_or_else(|| "STANDBY".to_string());
+
+        // Net link watchdog status
+        let mut net_status = "ONLINE".to_string();
+        if let Ok(net_content) = fs::read_to_string("/tmp/lupin_net_state") {
+            for line in net_content.lines() {
+                if let Some(stripped) = line.strip_prefix("STATUS=") {
+                    net_status = stripped.trim().to_string();
+                    break;
+                }
+            }
+        }
+
         Self {
             cpu_freqs_khz: freqs,
             cpu_temp_celsius,
@@ -99,6 +116,8 @@ impl SiliconTelemetry {
             zram_orig_bytes: zram_orig,
             zram_compr_bytes: zram_compr,
             thermal_mode,
+            peltier_state,
+            net_status,
         }
     }
 
@@ -135,12 +154,22 @@ impl SiliconTelemetry {
         m.push_str("# TYPE lupinos_zram_compr_bytes gauge\n");
         m.push_str(&format!("lupinos_zram_compr_bytes {}\n", self.zram_compr_bytes));
 
+        m.push_str("# HELP lupinos_peltier_active Peltier thermoelectric cooler active flag (1 or 0)\n");
+        m.push_str("# TYPE lupinos_peltier_active gauge\n");
+        let peltier_num = if self.peltier_state == "ACTIVE" { 1 } else { 0 };
+        m.push_str(&format!("lupinos_peltier_active{{state=\"{}\"}} {}\n", self.peltier_state, peltier_num));
+
+        m.push_str("# HELP lupinos_network_online Network connectivity status flag (1 or 0)\n");
+        m.push_str("# TYPE lupinos_network_online gauge\n");
+        let net_online = if self.net_status == "ONLINE" { 1 } else { 0 };
+        m.push_str(&format!("lupinos_network_online{{status=\"{}\"}} {}\n", self.net_status, net_online));
+
         m
     }
 
     pub fn to_json(&self) -> String {
         format!(
-            "{{\"cpu\":{{\"temp_celsius\":{:.1},\"prime_mhz\":{:.1},\"freqs_khz\":{:?}}},\"battery\":{{\"temp_celsius\":{:.1},\"capacity_percent\":{},\"current_ma\":{}}},\"memory\":{{\"total_kb\":{},\"free_kb\":{},\"available_kb\":{},\"zram_orig_bytes\":{},\"zram_compr_bytes\":{}}},\"thermal\":{{\"mode\":\"{}\"}}}}\n",
+            "{{\"cpu\":{{\"temp_celsius\":{:.1},\"prime_mhz\":{:.1},\"freqs_khz\":{:?}}},\"battery\":{{\"temp_celsius\":{:.1},\"capacity_percent\":{},\"current_ma\":{}}},\"memory\":{{\"total_kb\":{},\"free_kb\":{},\"available_kb\":{},\"zram_orig_bytes\":{},\"zram_compr_bytes\":{}}},\"thermal\":{{\"mode\":\"{}\"}},\"peltier\":{{\"state\":\"{}\"}},\"network\":{{\"status\":\"{}\"}}}}\n",
             self.cpu_temp_celsius,
             (self.cpu_freqs_khz[7] as f32) / 1000.0,
             self.cpu_freqs_khz,
@@ -152,7 +181,9 @@ impl SiliconTelemetry {
             self.mem_available_kb,
             self.zram_orig_bytes,
             self.zram_compr_bytes,
-            self.thermal_mode
+            self.thermal_mode,
+            self.peltier_state,
+            self.net_status
         )
     }
 }

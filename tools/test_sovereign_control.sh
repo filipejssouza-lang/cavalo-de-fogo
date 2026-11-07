@@ -100,4 +100,9 @@ wait $TEST_PID || true
 rm -f tools/test_thermal_policy.c build/test_thermal_policy
 rm -f "$LUPIN_MOCK_CPU_TEMP_NODE" "$LUPIN_MOCK_BAT_TEMP_NODE" "$LUPIN_MOCK_COOLING_NODE"
 
-echo "All tests passed (Compilation OK and Thermal Policy Logic Verified)."
+echo "5. Network Watchdog Anti-Flap Hysteresis Test"
+gcc -Isrc/guardian src/guardian/net_watchdog.c tests/test_net_watchdog.c -o build/test_net_watchdog
+./build/test_net_watchdog
+rm -f build/test_net_watchdog
+
+echo "All tests passed (Compilation OK, Thermal Policy Logic and Net Watchdog Anti-Flap Verified)."
