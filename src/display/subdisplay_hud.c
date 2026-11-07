@@ -292,7 +292,7 @@ void draw_char(drm_fb_t *fb, int x, int y, char c, uint32_t color) {
     for (int row = 0; row < 8; row++) {
         uint8_t bits = font8x8[idx][row];
         for (int col = 0; col < 8; col++) {
-            if (bits & (1 << col)) {
+            if (bits & (0x80 >> col)) {
                 set_pixel(fb, x + col, y + row, color);
             }
         }

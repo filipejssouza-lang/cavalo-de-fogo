@@ -354,7 +354,7 @@ void draw_char(drm_fb_t *fb, int x, int y, char c, uint32_t color) {
     const unsigned char *glyph = font8x8_basic[(int)c];
     for (int cy = 0; cy < 8; cy++) {
         for (int cx = 0; cx < 8; cx++) {
-            if (glyph[cy] & (1 << cx)) {
+            if (glyph[cy] & (0x80 >> cx)) {
                 draw_pixel(fb, x + cx, y + cy, color);
             }
         }
