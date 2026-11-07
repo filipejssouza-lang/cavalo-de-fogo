@@ -27,7 +27,7 @@ jobs:
       - name: Install Toolchain & Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools python3 cpio gzip curl
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross musl-tools python3 cpio gzip curl
           # Instalar avbtool oficial do AOSP
           curl -s https://android.googlesource.com/platform/external/avb/+/master/avbtool.py?format=TEXT | base64 -d > avbtool
           chmod +x avbtool
@@ -35,6 +35,7 @@ jobs:
 
       - name: Compile Sovereign C Binaries (AArch64 Static)
         run: |
+          CC=aarch64-linux-gnu-gcc make clean
           CC=aarch64-linux-gnu-gcc make
           mkdir -p bin
           cp build/lupinos_guard bin/lupinos_guard
@@ -43,6 +44,7 @@ jobs:
           cp build/lupinctl bin/lupinctl
           cp build/lupin_slot_ctl bin/lupin_slot_ctl
           ls -lh bin/
+          file bin/*
 
       - name: Run Host-Runnable Tests
         run: |

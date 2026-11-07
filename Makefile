@@ -1,16 +1,16 @@
 CC ?= gcc
 ARCH_Check := $(shell $(CC) -dumpmachine 2>/dev/null)
 
-STATIC ?=
 ifneq (,$(findstring aarch64,$(ARCH_Check)))
     ARCH_FLAGS = -march=armv8.4-a+dotprod
     STATIC ?= -static
 else
     ARCH_FLAGS =
+    STATIC ?=
 endif
 
 CFLAGS = -O3 $(STATIC) $(ARCH_FLAGS) -ffast-math -Wall
-LDFLAGS = -lm -lpthread -ldl
+LDFLAGS = $(STATIC) -lm -lpthread -ldl
 
 SRC_CPU = src/cpu/neon_kernels.c src/cpu/governor_control.c
 SRC_NPU = src/npu/fastrpc_cdsp.c src/npu/fastrpc_npu.c
@@ -56,7 +56,7 @@ clean:
 
 build/lupinctl: src/lupinctl/lupinctl.c
 	@mkdir -p build
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 lupinctl: build/lupinctl
 
