@@ -281,7 +281,7 @@ static const char *(*fn_meta_tag_name)(uint32_t) = NULL;
 static camera_metadata_t *(*fn_meta_clone)(const camera_metadata_t *) = NULL;
 static camera_metadata_t *(*fn_meta_alloc)(size_t, size_t) = NULL;
 static int (*fn_meta_append)(camera_metadata_t *, const camera_metadata_t *) = NULL;
-static int (*fn_meta_update)(camera_metadata_t *, size_t, const void *, size_t) = NULL;
+static int (*fn_meta_update)(camera_metadata_t *, size_t, const void *, size_t, void *) = NULL;
 static int (*fn_meta_add)(camera_metadata_t *, uint32_t, const void *, size_t) = NULL;
 static void (*fn_meta_free)(camera_metadata_t *) = NULL;
 static int (*fn_set_vendor_ops)(const vendor_tag_ops_t *) = NULL;
@@ -292,6 +292,7 @@ static int (*fn_gb_realloc)(void *self, uint32_t w, uint32_t h, int32_t fmt, uin
 static int (*fn_gb_lock)(void *self, uint32_t usage, void **vaddr, int32_t *bpp, int32_t *stride) = NULL;
 static int (*fn_gb_unlock)(void *self) = NULL;
 static void (*fn_ref_inc)(const void *self, const void *id) = NULL;
+static void (*fn_cfg_rpc_pool)(size_t max_threads, bool caller_will_join) = NULL;
 
 static vendor_tag_ops_t g_vtag_ops;
 
@@ -328,6 +329,14 @@ static int load_runtime_libs(void) {
     void *h_utils = dlopen("libutils.so", RTLD_NOW | RTLD_GLOBAL);
     if (h_utils) {
         fn_ref_inc = dlsym(h_utils, "_ZNK7android7RefBase9incStrongEPKv");
+    }
+
+    void *h_hidl = dlopen("libhidlbase.so", RTLD_NOW | RTLD_GLOBAL);
+    if (h_hidl) {
+        fn_cfg_rpc_pool = dlsym(h_hidl, "_ZN7android8hardware22configureRpcThreadpoolEmb");
+        if (fn_cfg_rpc_pool) {
+            fn_cfg_rpc_pool(6, false);
+        }
     }
 
     if (!fn_meta_entry_count || !fn_meta_ro_entry || !fn_gb_ctor || !fn_gb_realloc || !fn_gb_lock || !fn_gb_unlock) {
@@ -371,7 +380,7 @@ static camera_metadata_t *clone_and_set_u8(const camera_metadata_t *src, const c
     }
     camera_metadata_ro_entry_t de;
     if (find_entry_by_name(dst, sec, name, &de) && fn_meta_update) {
-        fn_meta_update(dst, de.index, &val, 1);
+        fn_meta_update(dst, de.index, &val, 1, NULL);
     }
     return dst;
 }
@@ -442,14 +451,15 @@ static void wait_and_close_fence(int fence_fd, int timeout_ms) {
  * Sincronização Assíncrona de Captura HAL3
  * ============================================================================ */
 
-#define NUM_PREV_BUFS 4
+#define MAX_PREV_BUFS 20
 
 static pthread_mutex_t g_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_cv  = PTHREAD_COND_INITIALIZER;
 
 static camera3_stream_t g_prev_stream;
 static camera3_stream_t g_jpeg_stream;
-static lupin_gbuf_t     g_prev_bufs[NUM_PREV_BUFS];
+static lupin_gbuf_t     g_prev_bufs[MAX_PREV_BUFS];
+static int              g_num_prev_bufs = 12;
 static lupin_gbuf_t     g_jpeg_buf;
 
 static bool g_jpeg_done   = false;
@@ -480,7 +490,7 @@ static void hal3_process_capture_result(const camera3_callback_ops_t *ops, const
             pthread_mutex_unlock(&g_mtx);
             wait_and_close_fence(fence, 1000);
             pthread_mutex_lock(&g_mtx);
-            for (int k = 0; k < NUM_PREV_BUFS; k++) {
+            for (int k = 0; k < g_num_prev_bufs; k++) {
                 if (sb->buffer == g_prev_bufs[k].handle_slot) {
                     g_prev_bufs[k].in_use = false;
                 }
@@ -843,10 +853,15 @@ static int cmd_shot(const char *hal_path, int cam_id, const char *out_path,
         _exit(1);
     }
 
-    /* Aloca buffers Gralloc */
+    /* Aloca buffers Gralloc respeitando max_buffers negociado pelo CamX */
     if (dual_stream) {
+        int needed = (int)g_prev_stream.max_buffers + 4;
+        if (needed < 12) needed = 12;
+        if (needed > MAX_PREV_BUFS) needed = MAX_PREV_BUFS;
+        g_num_prev_bufs = needed;
+
         uint64_t p_usage = (uint64_t)g_prev_stream.usage | GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_HW_CAMERA_WRITE;
-        for (int i = 0; i < NUM_PREV_BUFS; i++) {
+        for (int i = 0; i < g_num_prev_bufs; i++) {
             if (alloc_gbuf(&g_prev_bufs[i], prev_w, prev_h, HAL_PIXEL_FORMAT_YCbCr_420_888, p_usage) != 0) {
                 dev->common.close(&dev->common);
                 _exit(1);
@@ -862,13 +877,13 @@ static int cmd_shot(const char *hal_path, int cam_id, const char *out_path,
 
     uint32_t frame_no = 0;
 
-    /* Fase 1: Warmup de 3A (Auto-Exposição, Balanço de Branco e Auto-Foco) */
+    /* Fase 1: Warmup de 3A (Auto-Exposição, Balanço de Branco, Auto-Foco e OIS) */
     if (dual_stream && warmup_frames > 0 && prev_tpl) {
         for (int f = 0; f < warmup_frames; f++) {
             int slot = -1;
             pthread_mutex_lock(&g_mtx);
             while (slot < 0) {
-                for (int k = 0; k < NUM_PREV_BUFS; k++) {
+                for (int k = 0; k < g_num_prev_bufs; k++) {
                     if (!g_prev_bufs[k].in_use) {
                         slot = k;
                         g_prev_bufs[k].in_use = true;
@@ -914,7 +929,22 @@ static int cmd_shot(const char *hal_path, int cam_id, const char *out_path,
                 pthread_mutex_unlock(&g_mtx);
                 break;
             }
+            /* Ritmo suave (~30ms) para convergência real de exposição e foco */
+            usleep(30000);
         }
+
+        /* Aguarda retorno efetivo dos quadros de warmup do ISP antes do disparo still */
+        int target_done = (warmup_frames > 4) ? (warmup_frames - 3) : 1;
+        pthread_mutex_lock(&g_mtx);
+        while (g_prev_completed < target_done) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 3;
+            if (pthread_cond_timedwait(&g_cv, &g_mtx, &ts) == ETIMEDOUT) {
+                break;
+            }
+        }
+        pthread_mutex_unlock(&g_mtx);
     }
 
     /* Fase 2: Disparo Still JPEG de Hardware (Spectra 580 JPEG Encoder) */
@@ -928,7 +958,7 @@ static int cmd_shot(const char *hal_path, int cam_id, const char *out_path,
         int slot = -1;
         pthread_mutex_lock(&g_mtx);
         while (slot < 0) {
-            for (int k = 0; k < NUM_PREV_BUFS; k++) {
+            for (int k = 0; k < g_num_prev_bufs; k++) {
                 if (!g_prev_bufs[k].in_use) {
                     slot = k;
                     g_prev_bufs[k].in_use = true;

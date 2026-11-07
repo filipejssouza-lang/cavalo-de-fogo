@@ -85,13 +85,23 @@ setup_sandbox() {
     mount_ro_loop "$RUNTIME_APEX" 4096 "$MNT_BASE/runtime" "erofs"
     mount_ro_loop "$VNDK30_APEX"  4096 "$MNT_BASE/vndk30"  "ext4"
 
+    # Expõe firmwares da Adreno 660 (a660_zap), Spectra 580 ICP e EvaSS/CVP para o ueventd
+    rm -f "/vendor/firmware/a660*" "/vendor/firmware/*" 2>/dev/null || true
+    for fw in "$MNT_BASE/vendor/firmware/"*; do
+        base=$(basename "$fw")
+        if [ ! -e "/vendor/firmware/$base" ]; then
+            ln -sf "$fw" "/vendor/firmware/$base"
+        fi
+    done
+
     mkdir -p "$SANDBOX"
-    mountpoint -q "$SANDBOX" || mount -t tmpfs -o size=64M tmpfs "$SANDBOX"
+    mountpoint -q "$SANDBOX" || mount -t tmpfs -o size=256M tmpfs "$SANDBOX"
 
     mkdir -p "$SANDBOX/system" "$SANDBOX/vendor" "$SANDBOX/system_ext" "$SANDBOX/odm" \
              "$SANDBOX/apex/com.android.runtime" "$SANDBOX/apex/com.android.vndk.v30" \
              "$SANDBOX/proc" "$SANDBOX/sys" "$SANDBOX/dev" "$SANDBOX/tmp" \
-             "$SANDBOX/data/vendor/camera" "$SANDBOX/linkerconfig" \
+             "$SANDBOX/data/vendor/camera/offlinelog" "$SANDBOX/data/vendor/camera/coredump" \
+             "$SANDBOX/linkerconfig" \
              "$SANDBOX/mnt/vendor/persist" "$SANDBOX/dsp" "$SANDBOX/persist" \
              "$SANDBOX/rec_bin" "$SANDBOX/rec_lib64"
 
@@ -105,20 +115,159 @@ setup_sandbox() {
     mountpoint -q "$SANDBOX/apex/com.android.runtime" || mount --bind "$MNT_BASE/runtime" "$SANDBOX/apex/com.android.runtime"
     mountpoint -q "$SANDBOX/apex/com.android.vndk.v30" || mount --bind "$MNT_BASE/vndk30" "$SANDBOX/apex/com.android.vndk.v30"
 
-    mount --make-private "$SANDBOX/vendor" 2>/dev/null || true
-    mount --make-private "$SANDBOX/odm"    2>/dev/null || true
+    mount --make-private "$SANDBOX/system"     2>/dev/null || true
+    mount --make-private "$SANDBOX/system_ext" 2>/dev/null || true
+    mount --make-private "$SANDBOX/vendor"     2>/dev/null || true
+    mount --make-private "$SANDBOX/odm"        2>/dev/null || true
 
+    # Manifests VINTF cirúrgicos: evitam crash do hwservicemanager tentando subir lazy HALs ociosos
     if ! mountpoint -q "$SANDBOX/vendor/etc/vintf"; then
         rm -rf /tmp/vintf_v
-        cp -a "$MNT_BASE/vendor/etc/vintf" /tmp/vintf_v
-        ln -sf manifest_lahaina.xml /tmp/vintf_v/manifest.xml
+        mkdir -p /tmp/vintf_v
+        cat > /tmp/vintf_v/manifest.xml << 'VEOF'
+<manifest version="1.0" type="device" target-level="5">
+    <hal format="hidl">
+        <name>android.hardware.graphics.allocator</name>
+        <transport>hwbinder</transport>
+        <version>3.0</version>
+        <version>4.0</version>
+        <interface>
+            <name>IAllocator</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+    <hal format="hidl">
+        <name>vendor.qti.hardware.display.allocator</name>
+        <transport>hwbinder</transport>
+        <version>3.0</version>
+        <version>4.0</version>
+        <interface>
+            <name>IQtiAllocator</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+    <hal format="hidl">
+        <name>android.hardware.graphics.mapper</name>
+        <transport arch="32+64">passthrough</transport>
+        <version>3.0</version>
+        <version>4.0</version>
+        <interface>
+            <name>IMapper</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+    <hal format="hidl">
+        <name>vendor.qti.hardware.display.mapper</name>
+        <transport arch="32+64">passthrough</transport>
+        <version>3.0</version>
+        <version>4.0</version>
+        <interface>
+            <name>IQtiMapper</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+    <hal format="hidl">
+        <name>android.hardware.camera.provider</name>
+        <transport>hwbinder</transport>
+        <version>2.4</version>
+        <interface>
+            <name>ICameraProvider</name>
+            <instance>external/0</instance>
+            <instance>legacy/0</instance>
+        </interface>
+    </hal>
+    <hal format="hidl">
+        <name>vendor.qti.hardware.camera.postproc</name>
+        <transport>hwbinder</transport>
+        <version>1.0</version>
+        <interface>
+            <name>IPostProcService</name>
+            <instance>camerapostprocservice</instance>
+        </interface>
+    </hal>
+    <hal format="hidl">
+        <name>vendor.xiaomi.hardware.cameraperf</name>
+        <transport>hwbinder</transport>
+        <version>1.0</version>
+        <interface>
+            <name>IMiCameraPerfService</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+    <hal format="hidl">
+        <name>vendor.xiaomi.hardware.campostproc</name>
+        <transport>hwbinder</transport>
+        <version>1.0</version>
+        <interface>
+            <name>IMiPostProcService</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+</manifest>
+VEOF
         mount --bind /tmp/vintf_v "$SANDBOX/vendor/etc/vintf"
     fi
+
     if ! mountpoint -q "$SANDBOX/odm/etc/vintf"; then
         rm -rf /tmp/vintf_o
-        cp -a "$MNT_BASE/odm/etc/vintf" /tmp/vintf_o
-        ln -sf manifest_star.xml /tmp/vintf_o/manifest.xml
+        mkdir -p /tmp/vintf_o
+        echo '<manifest version="1.0" type="device"/>' > /tmp/vintf_o/manifest.xml
         mount --bind /tmp/vintf_o "$SANDBOX/odm/etc/vintf"
+    fi
+
+    if ! mountpoint -q "$SANDBOX/system/etc/vintf"; then
+        rm -rf /tmp/vintf_sys
+        mkdir -p /tmp/vintf_sys
+        cat > /tmp/vintf_sys/manifest.xml << 'SEOF'
+<manifest version="1.0" type="framework">
+    <hal format="hidl">
+        <name>android.hidl.manager</name>
+        <transport>hwbinder</transport>
+        <version>1.2</version>
+        <interface>
+            <name>IServiceManager</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+    <hal format="hidl">
+        <name>android.hidl.memory</name>
+        <transport arch="32+64">passthrough</transport>
+        <version>1.0</version>
+        <interface>
+            <name>IMapper</name>
+            <instance>ashmem</instance>
+        </interface>
+    </hal>
+    <hal format="hidl">
+        <name>android.hidl.token</name>
+        <transport>hwbinder</transport>
+        <version>1.0</version>
+        <interface>
+            <name>ITokenManager</name>
+            <instance>default</instance>
+        </interface>
+    </hal>
+</manifest>
+SEOF
+        mount --bind /tmp/vintf_sys "$SANDBOX/system/etc/vintf"
+    fi
+
+    if ! mountpoint -q "$SANDBOX/system_ext/etc/vintf"; then
+        rm -rf /tmp/vintf_sext
+        mkdir -p /tmp/vintf_sext
+        echo '<manifest version="1.0" type="framework"/>' > /tmp/vintf_sext/manifest.xml
+        mount --bind /tmp/vintf_sext "$SANDBOX/system_ext/etc/vintf"
+    fi
+
+    # Desativa espera de 30s do SLPI Gyro (NCS) e rotação GPU desnecessária no CamX K1/K1A
+    if ! mountpoint -q "$SANDBOX/vendor/etc/camera/camxoverridesettingsOfPro.txt"; then
+        cp -f "$MNT_BASE/vendor/etc/camera/camxoverridesettings.txt" /tmp/camx_ov1.txt
+        cp -f "$MNT_BASE/vendor/etc/camera/camxoverridesettingsOfPro.txt" /tmp/camx_ov2.txt
+        sed -i 's/enableGPURotation=TRUE/enableGPURotation=FALSE/g' /tmp/camx_ov1.txt /tmp/camx_ov2.txt
+        printf "\nenableNCSService=FALSE\nenableGPURotation=FALSE\n" >> /tmp/camx_ov1.txt
+        printf "\nenableNCSService=FALSE\nenableGPURotation=FALSE\n" >> /tmp/camx_ov2.txt
+        mount --bind /tmp/camx_ov1.txt "$SANDBOX/vendor/etc/camera/camxoverridesettings.txt"
+        mount --bind /tmp/camx_ov2.txt "$SANDBOX/vendor/etc/camera/camxoverridesettingsOfPro.txt"
     fi
 
     mountpoint -q "$SANDBOX/proc" || mount -t proc proc "$SANDBOX/proc"
@@ -152,12 +301,17 @@ setup_sandbox() {
     fi
 
     cat > "$SANDBOX/linkerconfig/ld.config.txt" << 'EOF'
+dir.runtime = /apex/com.android.runtime/bin
 dir.system = /system/bin
 dir.system_ext = /system_ext/bin
 dir.rec = /rec_bin
 dir.vendor_hw = /vendor/bin/hw
 dir.vendor = /vendor/bin
 dir.lupin = /tmp
+
+[runtime]
+namespace.default.isolated = false
+namespace.default.search.paths = /apex/com.android.runtime/${LIB}/bionic:/system/${LIB}:/system_ext/${LIB}
 
 [system]
 namespace.default.isolated = false
@@ -215,8 +369,6 @@ EOF
 start_daemons() {
     chroot "$SANDBOX" /rec_bin/hwservicemanager >/dev/null 2>&1 &
     PID_HWSM=$!
-    chroot "$SANDBOX" /rec_bin/vndservicemanager /dev/vndbinder >/dev/null 2>&1 &
-    PID_VNDSM=$!
     sleep 1
     chroot "$SANDBOX" /vendor/bin/hw/vendor.qti.hardware.display.allocator-service >/dev/null 2>&1 &
     PID_ALLOC=$!
@@ -234,7 +386,7 @@ teardown_all() {
     for l in /dev/block/loop[0-9]*; do
         losetup -d "$l" 2>/dev/null || true
     done
-    rm -rf /tmp/vintf_v /tmp/vintf_o
+    rm -rf /tmp/vintf_v /tmp/vintf_o /tmp/vintf_sys /tmp/vintf_sext /tmp/camx_ov1.txt /tmp/camx_ov2.txt
     echo "[✓] Sandbox e partições RO desmontados com sucesso."
 }
 
