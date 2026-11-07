@@ -1,4 +1,5 @@
 #include "subdisplay_hud.h"
+#include "logo_bitmap.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -373,6 +374,15 @@ void draw_sparkline(drm_fb_t *fb, int x, int y, int w, int h, const float *data,
     }
 }
 
+void draw_logo(drm_fb_t *fb, int x, int y) {
+    for (int j = 0; j < LOGO_HEIGHT; j++) {
+        for (int i = 0; i < LOGO_WIDTH; i++) {
+            uint32_t col = lupin_logo_bitmap[j * LOGO_WIDTH + i];
+            draw_pixel(fb, x + i, y + j, col);
+        }
+    }
+}
+
 void draw_text(drm_fb_t *fb, int x, int y, const char *str, uint32_t color) {
     while (*str) {
         draw_char(fb, x, y, *str, color);
@@ -743,20 +753,22 @@ int main(void) {
             y += 5;
             draw_text(&fb, 5, y, "FAILOVER: ACTIVE", color_cyan);
         } else if (hud_state.current_page == 3) {
-            // Page 3: Status & Governador
-            draw_text(&fb, 5, y, "UPTIME:", color_green);
-            y += 10;
-            snprintf(buf, sizeof(buf), "%.0f s", tel.uptime);
-            draw_text(&fb, 5, y, buf, color_white);
-            y += 15;
+            // Page 3: Emblema Oficial & Status do Sistema
+            draw_logo(&fb, 15, y);
+            y += 100;
             
-            draw_text(&fb, 5, y, "HUD BACKLIGHT:", color_green);
-            y += 10;
-            snprintf(buf, sizeof(buf), "LEVEL: %d%%", hud_state.backlight_percent);
-            draw_text(&fb, 5, y, buf, color_white);
-            y += 15;
+            draw_text(&fb, 5, y, "FENRIR SOBERANO", color_cyan);
+            y += 12;
 
-            draw_text(&fb, 5, y, "A/B BOOT: SAFE", color_cyan);
+            snprintf(buf, sizeof(buf), "UPTIME: %.0f S", tel.uptime);
+            draw_text(&fb, 5, y, buf, color_white);
+            y += 10;
+            
+            snprintf(buf, sizeof(buf), "BLIGHT: %d%%", hud_state.backlight_percent);
+            draw_text(&fb, 5, y, buf, color_white);
+            y += 10;
+
+            draw_text(&fb, 5, y, "A/B BOOT: SAFE", color_green);
         }
 
         // Double Buffering: Page Flip

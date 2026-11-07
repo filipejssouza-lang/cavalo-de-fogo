@@ -62,6 +62,9 @@ void draw_line(drm_fb_t *fb, int x0, int y0, int x1, int y1, uint32_t color);
 // Draw a sparkline graph for historical metrics
 void draw_sparkline(drm_fb_t *fb, int x, int y, int w, int h, const float *data, int count, float min_val, float max_val, uint32_t color_line, uint32_t color_bg);
 
+// Draw the official Lupin OS cyber wolf emblem
+void draw_logo(drm_fb_t *fb, int x, int y);
+
 // Gather telemetry data from sysfs/proc
 void gather_telemetry(telemetry_data_t *data);
 

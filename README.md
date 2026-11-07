@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/lupin_os_logo.png" width="240" alt="Lupin OS v6 Logo" />
+</p>
+
 # 🐺 Lupin OS v6 — Soberania Autônoma
 > **Sistema Operacional Bare-Metal para Silício Qualcomm Snapdragon 888 (SM8350)**  
 > **Nó Principal do Cluster Lupin:** Xiaomi Mi 11 Ultra (*star*) — 12 GB LPDDR5 | 256 GB UFS 3.1 | Cooler Peltier Ativo
