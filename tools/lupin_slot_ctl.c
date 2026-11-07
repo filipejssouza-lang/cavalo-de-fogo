@@ -203,7 +203,7 @@ int main(int argc, char **argv) {
     // Tenta carregar HAL apenas se não estiver em ambiente estático restrito
     #ifndef __STATIC_RESTRICTED__
     const char *lib_path = "/system/lib64/hw/bootctrl.xiaomi_sm8350.so";
-    if (access(lib_path, R_OK) == 0 && getenv("LUPIN_NO_DLOPEN") == NULL) {
+    if (getenv("LUPIN_USE_HAL") != NULL && access(lib_path, R_OK) == 0) {
         h = dlopen(lib_path, RTLD_NOW);
     }
     #endif
