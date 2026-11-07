@@ -22,7 +22,7 @@ OBJ_NPU = $(SRC_NPU:.c=.o)
 OBJ_GUARDIAN = $(SRC_GUARDIAN:.c=.o)
 OBJ_BENCH = $(SRC_BENCH:.c=.o)
 
-TARGETS = build/lupinos_guard build/bench_extreme build/drm_subdisplay build/lupin-power build/lupinctl build/lupin_slot_ctl
+TARGETS = build/lupinos_guard build/bench_extreme build/drm_subdisplay build/lupin-power build/lupinctl build/lupin_slot_ctl build/lupin_lp_query
 
 all: $(TARGETS)
 
@@ -65,4 +65,9 @@ build/lupin_slot_ctl: tools/lupin_slot_ctl.c
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 slot_ctl: build/lupin_slot_ctl
+
+build/lupin_lp_query: tools/lupin_lp_query.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
+
 

@@ -142,6 +142,19 @@ def purge_twrp_and_inject_v6(ramdisk_gz_path, guardian_bin, hud_bin, power_bin, 
         os.chmod(dest_slot, 0o755)
         print(f"[+] Boot slot controller lupin_slot_ctl injetado: {dest_slot}")
 
+    # 8b. Injeta Ponte Soberana de Câmeras (lupin-cam, lupin_cam_shot, lupin_lp_query)
+    for cam_tool, target_dir in [
+        ("tools/lupin-cam", sbin_dir),
+        ("bin/lupin_cam_shot", sbin_dir),
+        ("bin/lupin_lp_query", sbin_dir),
+        ("build/lupin_lp_query", sbin_dir),
+    ]:
+        if os.path.exists(cam_tool):
+            dest_cam = os.path.join(target_dir, os.path.basename(cam_tool))
+            shutil.copy2(cam_tool, dest_cam)
+            os.chmod(dest_cam, 0o755)
+            print(f"[+] Módulo de câmera soberano injetado: {dest_cam}")
+
     # 9. Redireciona /system/bin/recovery para /sbin/lupinos_guard
     rec_symlink = os.path.join(sys_bin, "recovery")
     if os.path.exists(rec_symlink) or os.path.islink(rec_symlink):

@@ -33,7 +33,7 @@ jobs:
           chmod +x avbtool
           sudo mv avbtool /usr/local/bin/
 
-      - name: Compile Sovereign C Binaries (AArch64 Static)
+      - name: Compile Sovereign C Binaries (AArch64 Static + Bionic Camera HAL3)
         run: |
           CC=aarch64-linux-gnu-gcc make clean
           CC=aarch64-linux-gnu-gcc make
@@ -43,6 +43,14 @@ jobs:
           cp build/lupin-power bin/lupin-power
           cp build/lupinctl bin/lupinctl
           cp build/lupin_slot_ctl bin/lupin_slot_ctl
+          cp build/lupin_lp_query bin/lupin_lp_query
+          cp tools/lupin-cam bin/lupin-cam
+          chmod +x bin/lupin-cam
+
+          NDK_CLANG=$(find /usr/local/lib/android/sdk/ndk -name "aarch64-linux-android30-clang" | sort -V | tail -n 1)
+          echo "Using NDK Clang: $NDK_CLANG"
+          "$NDK_CLANG" -O2 -Wall -fPIE -pie src/camera/lupin_cam_shot.c -o bin/lupin_cam_shot -ldl -llog -lm
+
           ls -lh bin/
           file bin/*
 

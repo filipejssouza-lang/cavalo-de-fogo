@@ -1,0 +1,329 @@
+#!/system/bin/sh
+# ==============================================================================
+# /sbin/lupin-cam — Ponte Soberana de Câmera Sob Demanda (Lupin Bare-Metal OS v6)
+# ==============================================================================
+# - Monta partições da Xiaomi (super) estritamente em SOMENTE-LEITURA (-o ro)
+# - Sobe sandbox Bionic VNDK v30 isolado em /tmp/cam_sandbox
+# - Aciona o ISP Qualcomm Spectra 580 nas 3 lentes traseiras + frontal
+# - Mata TODOS os processos auxiliares imediatamente ao terminar (0 MB residual)
+# ==============================================================================
+
+set -e
+unset LD_LIBRARY_PATH
+
+SUPER_DEV="/dev/block/by-name/super"
+[ -e "$SUPER_DEV" ] || SUPER_DEV="/dev/block/sda29"
+
+MNT_BASE="/tmp/cam_mnt"
+SANDBOX="/tmp/cam_sandbox"
+
+LP_QUERY="/sbin/lupin_lp_query"
+[ -x "$LP_QUERY" ] || LP_QUERY="/system/bin/lupin_lp_query"
+
+SHOT_BIN="/sbin/lupin_cam_shot"
+[ -x "$SHOT_BIN" ] || SHOT_BIN="/system/bin/lupin_cam_shot"
+
+PID_HWSM=""
+PID_VNDSM=""
+PID_ALLOC=""
+
+cleanup_daemons() {
+    # Encerra exclusivamente processos rodando com root em /tmp/cam_sandbox
+    for p in $PID_ALLOC $PID_VNDSM $PID_HWSM; do
+        [ -n "$p" ] && kill -9 "$p" 2>/dev/null || true
+    done
+    for proc_root in /proc/[0-9]*/root; do
+        target=$(readlink "$proc_root" 2>/dev/null || true)
+        if [ "$target" = "$SANDBOX" ]; then
+            p=$(echo "$proc_root" | cut -d/ -f3)
+            [ "$p" != "$$" ] && kill -9 "$p" 2>/dev/null || true
+        fi
+    done
+    rm -f "$SANDBOX/tmp/shot_out.jpg" 2>/dev/null || true
+}
+
+trap cleanup_daemons EXIT INT TERM
+
+mount_ro_loop() {
+    _img="$1"
+    _off="$2"
+    _dst="$3"
+    _fstype="$4"
+    mkdir -p "$_dst"
+    if mountpoint -q "$_dst"; then
+        return 0
+    fi
+    _loop=$(losetup -f)
+    losetup -r -o "$_off" "$_loop" "$_img"
+    mount -t "$_fstype" -o ro "$_loop" "$_dst"
+}
+
+mount_super_part() {
+    _part="$1"
+    _dst="$2"
+    mkdir -p "$_dst"
+    if mountpoint -q "$_dst"; then
+        return 0
+    fi
+    _info=$("$LP_QUERY" "$SUPER_DEV" "$_part")
+    _off=$(echo "$_info" | awk '{print $1}')
+    mount_ro_loop "$SUPER_DEV" "$_off" "$_dst" "erofs"
+}
+
+setup_sandbox() {
+    mkdir -p "$MNT_BASE"
+    mount_super_part "vendor_a"     "$MNT_BASE/vendor"
+    mount_super_part "system_a"     "$MNT_BASE/system"
+    mount_super_part "system_ext_a" "$MNT_BASE/system_ext"
+    mount_super_part "odm_a"        "$MNT_BASE/odm"
+
+    # Payloads APEX em offset 4096 (0x1000)
+    RUNTIME_APEX="$MNT_BASE/system/system/apex/com.android.runtime.apex"
+    VNDK30_APEX="$MNT_BASE/system_ext/apex/com.android.vndk.v30.apex"
+    [ -f "$VNDK30_APEX" ] || VNDK30_APEX=$(ls "$MNT_BASE"/system*/apex/*vndk*30*.apex 2>/dev/null | head -n 1)
+
+    mount_ro_loop "$RUNTIME_APEX" 4096 "$MNT_BASE/runtime" "erofs"
+    mount_ro_loop "$VNDK30_APEX"  4096 "$MNT_BASE/vndk30"  "ext4"
+
+    mkdir -p "$SANDBOX"
+    mountpoint -q "$SANDBOX" || mount -t tmpfs -o size=64M tmpfs "$SANDBOX"
+
+    mkdir -p "$SANDBOX/system" "$SANDBOX/vendor" "$SANDBOX/system_ext" "$SANDBOX/odm" \
+             "$SANDBOX/apex/com.android.runtime" "$SANDBOX/apex/com.android.vndk.v30" \
+             "$SANDBOX/proc" "$SANDBOX/sys" "$SANDBOX/dev" "$SANDBOX/tmp" \
+             "$SANDBOX/data/vendor/camera" "$SANDBOX/linkerconfig" \
+             "$SANDBOX/mnt/vendor/persist" "$SANDBOX/dsp" "$SANDBOX/persist" \
+             "$SANDBOX/rec_bin" "$SANDBOX/rec_lib64"
+
+    ln -sf /system/bin "$SANDBOX/bin"
+    ln -sf /system/etc "$SANDBOX/etc"
+
+    mountpoint -q "$SANDBOX/system"     || mount --bind "$MNT_BASE/system/system" "$SANDBOX/system"
+    mountpoint -q "$SANDBOX/vendor"     || mount --bind "$MNT_BASE/vendor"        "$SANDBOX/vendor"
+    mountpoint -q "$SANDBOX/system_ext" || mount --bind "$MNT_BASE/system_ext"    "$SANDBOX/system_ext"
+    mountpoint -q "$SANDBOX/odm"        || mount --bind "$MNT_BASE/odm"           "$SANDBOX/odm"
+    mountpoint -q "$SANDBOX/apex/com.android.runtime" || mount --bind "$MNT_BASE/runtime" "$SANDBOX/apex/com.android.runtime"
+    mountpoint -q "$SANDBOX/apex/com.android.vndk.v30" || mount --bind "$MNT_BASE/vndk30" "$SANDBOX/apex/com.android.vndk.v30"
+
+    mount --make-private "$SANDBOX/vendor" 2>/dev/null || true
+    mount --make-private "$SANDBOX/odm"    2>/dev/null || true
+
+    if ! mountpoint -q "$SANDBOX/vendor/etc/vintf"; then
+        rm -rf /tmp/vintf_v
+        cp -a "$MNT_BASE/vendor/etc/vintf" /tmp/vintf_v
+        ln -sf manifest_lahaina.xml /tmp/vintf_v/manifest.xml
+        mount --bind /tmp/vintf_v "$SANDBOX/vendor/etc/vintf"
+    fi
+    if ! mountpoint -q "$SANDBOX/odm/etc/vintf"; then
+        rm -rf /tmp/vintf_o
+        cp -a "$MNT_BASE/odm/etc/vintf" /tmp/vintf_o
+        ln -sf manifest_star.xml /tmp/vintf_o/manifest.xml
+        mount --bind /tmp/vintf_o "$SANDBOX/odm/etc/vintf"
+    fi
+
+    mountpoint -q "$SANDBOX/proc" || mount -t proc proc "$SANDBOX/proc"
+    mountpoint -q "$SANDBOX/sys"  || mount --bind /sys "$SANDBOX/sys"
+    mountpoint -q "$SANDBOX/mnt/vendor/persist" || mount --bind /mnt/vendor/persist "$SANDBOX/mnt/vendor/persist"
+    mountpoint -q "$SANDBOX/persist" || mount --bind /persist "$SANDBOX/persist"
+    mountpoint -q "$SANDBOX/dsp"     || mount --bind /dsp "$SANDBOX/dsp"
+    mountpoint -q "$SANDBOX/vendor/dsp" || mount --bind /dsp "$SANDBOX/vendor/dsp"
+    mountpoint -q "$SANDBOX/vendor/firmware_mnt" || mount --bind /vendor/firmware_mnt "$SANDBOX/vendor/firmware_mnt"
+    mountpoint -q "$SANDBOX/rec_bin"   || mount --bind /system/bin "$SANDBOX/rec_bin"
+    mountpoint -q "$SANDBOX/rec_lib64" || mount --bind /system/lib64 "$SANDBOX/rec_lib64"
+
+    if ! mountpoint -q "$SANDBOX/dev"; then
+        mount -t tmpfs -o size=8M tmpfs "$SANDBOX/dev"
+        for node in /dev/*; do
+            base=$(basename "$node")
+            case "$base" in binder*|pts|usb-ffs|block|socket) continue ;; esac
+            if [ -c "$node" ] || [ -b "$node" ]; then
+                cp -a "$node" "$SANDBOX/dev/$base"
+            fi
+        done
+        mkdir -p "$SANDBOX/dev/__properties__" "$SANDBOX/dev/binderfs" "$SANDBOX/dev/socket" "$SANDBOX/dev/dri"
+        mount --bind /dev/__properties__ "$SANDBOX/dev/__properties__"
+        mount --bind /dev/socket "$SANDBOX/dev/socket"
+        mount --bind /dev/dri "$SANDBOX/dev/dri"
+        mount -t binder binder "$SANDBOX/dev/binderfs"
+        chmod 666 "$SANDBOX/dev/binderfs/"*
+        ln -sf /dev/binderfs/binder    "$SANDBOX/dev/binder"
+        ln -sf /dev/binderfs/hwbinder  "$SANDBOX/dev/hwbinder"
+        ln -sf /dev/binderfs/vndbinder "$SANDBOX/dev/vndbinder"
+    fi
+
+    cat > "$SANDBOX/linkerconfig/ld.config.txt" << 'EOF'
+dir.system = /system/bin
+dir.system_ext = /system_ext/bin
+dir.rec = /rec_bin
+dir.vendor_hw = /vendor/bin/hw
+dir.vendor = /vendor/bin
+dir.lupin = /tmp
+
+[system]
+namespace.default.isolated = false
+namespace.default.search.paths = /apex/com.android.runtime/${LIB}/bionic:/system/${LIB}:/system_ext/${LIB}
+
+[system_ext]
+namespace.default.isolated = false
+namespace.default.search.paths = /apex/com.android.runtime/${LIB}/bionic:/system/${LIB}:/system_ext/${LIB}
+
+[rec]
+namespace.default.isolated = false
+namespace.default.search.paths = /rec_lib64:/apex/com.android.runtime/${LIB}/bionic:/system/${LIB}
+
+[lupin]
+additional.namespaces = system
+namespace.default.isolated = true
+namespace.default.visible = true
+namespace.default.search.paths = /tmp:/vendor/${LIB}:/vendor/${LIB}/hw:/vendor/${LIB}/camera:/odm/${LIB}:/apex/com.android.vndk.v30/${LIB}
+namespace.default.permitted.paths = /tmp:/vendor:/odm:/apex/com.android.vndk.v30:/data:/mnt
+namespace.default.links = system
+namespace.default.link.system.shared_libs = libc.so:libm.so:libdl.so:libdl_android.so:liblog.so:libz.so:libsync.so:libcgrouprc.so:libvndksupport.so:libnativewindow.so:libbinder_ndk.so:libneuralnetworks.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libvulkan.so:libmediandk.so:libandroid_net.so
+namespace.system.isolated = false
+namespace.system.visible = true
+namespace.system.search.paths = /apex/com.android.runtime/${LIB}/bionic:/system/${LIB}:/system_ext/${LIB}
+
+[vendor_hw]
+additional.namespaces = system
+namespace.default.isolated = true
+namespace.default.visible = true
+namespace.default.search.paths = /vendor/${LIB}:/vendor/${LIB}/hw:/vendor/${LIB}/camera:/odm/${LIB}:/apex/com.android.vndk.v30/${LIB}
+namespace.default.permitted.paths = /vendor:/odm:/apex/com.android.vndk.v30:/data:/mnt:/tmp
+namespace.default.links = system
+namespace.default.link.system.shared_libs = libc.so:libm.so:libdl.so:libdl_android.so:liblog.so:libz.so:libsync.so:libcgrouprc.so:libvndksupport.so:libnativewindow.so:libbinder_ndk.so:libneuralnetworks.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libvulkan.so:libmediandk.so:libandroid_net.so
+namespace.system.isolated = false
+namespace.system.visible = true
+namespace.system.search.paths = /apex/com.android.runtime/${LIB}/bionic:/system/${LIB}:/system_ext/${LIB}
+
+[vendor]
+additional.namespaces = system
+namespace.default.isolated = true
+namespace.default.visible = true
+namespace.default.search.paths = /vendor/${LIB}:/vendor/${LIB}/hw:/vendor/${LIB}/camera:/odm/${LIB}:/apex/com.android.vndk.v30/${LIB}
+namespace.default.permitted.paths = /vendor:/odm:/apex/com.android.vndk.v30:/data:/mnt:/tmp
+namespace.default.links = system
+namespace.default.link.system.shared_libs = libc.so:libm.so:libdl.so:libdl_android.so:liblog.so:libz.so:libsync.so:libcgrouprc.so:libvndksupport.so:libnativewindow.so:libbinder_ndk.so:libneuralnetworks.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libvulkan.so:libmediandk.so:libandroid_net.so
+namespace.system.isolated = false
+namespace.system.visible = true
+namespace.system.search.paths = /apex/com.android.runtime/${LIB}/bionic:/system/${LIB}:/system_ext/${LIB}
+EOF
+
+    cp -f "$SHOT_BIN" "$SANDBOX/tmp/lupin_cam_shot"
+    chmod 755 "$SANDBOX/tmp/lupin_cam_shot"
+}
+
+start_daemons() {
+    chroot "$SANDBOX" /rec_bin/hwservicemanager >/dev/null 2>&1 &
+    PID_HWSM=$!
+    chroot "$SANDBOX" /rec_bin/vndservicemanager /dev/vndbinder >/dev/null 2>&1 &
+    PID_VNDSM=$!
+    sleep 1
+    chroot "$SANDBOX" /vendor/bin/hw/vendor.qti.hardware.display.allocator-service >/dev/null 2>&1 &
+    PID_ALLOC=$!
+    sleep 1
+}
+
+teardown_all() {
+    cleanup_daemons
+    for m in $(awk '$2 ~ /^\/tmp\/cam_sandbox/ {print $2}' /proc/mounts | sort -r); do
+        umount -l "$m" 2>/dev/null || true
+    done
+    for m in $(awk '$2 ~ /^\/tmp\/cam_mnt/ {print $2}' /proc/mounts | sort -r); do
+        umount -l "$m" 2>/dev/null || true
+    done
+    for l in /dev/block/loop[0-9]*; do
+        losetup -d "$l" 2>/dev/null || true
+    done
+    rm -rf /tmp/vintf_v /tmp/vintf_o
+    echo "[✓] Sandbox e partições RO desmontados com sucesso."
+}
+
+CMD="${1:-help}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+    probe|list)
+        setup_sandbox
+        start_daemons
+        chroot "$SANDBOX" /tmp/lupin_cam_shot probe "$@"
+        ;;
+    shot|capture)
+        LENS="0"
+        if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
+            case "$1" in
+                wide|main|gn2)     LENS="0" ;;
+                front|selfie)      LENS="1" ;;
+                ultra|uw)          LENS="2" ;;
+                tele|5x|periscope) LENS="3" ;;
+                *)                 LENS="$1" ;;
+            esac
+            shift
+        fi
+
+        OUT_FILE="/data/lupin_shot_$(date +%Y%m%d_%H%M%S).jpg"
+        EXTRA_ARGS=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -o|--out)
+                    OUT_FILE="$2"
+                    shift 2
+                    ;;
+                -r|--res)
+                    W=$(echo "$2" | cut -dx -f1)
+                    H=$(echo "$2" | cut -dx -f2)
+                    EXTRA_ARGS="$EXTRA_ARGS --width $W --height $H"
+                    shift 2
+                    ;;
+                -q|--quality)
+                    EXTRA_ARGS="$EXTRA_ARGS --quality $2"
+                    shift 2
+                    ;;
+                -w|--warmup)
+                    EXTRA_ARGS="$EXTRA_ARGS --warmup $2"
+                    shift 2
+                    ;;
+                --full|--single-stream)
+                    EXTRA_ARGS="$EXTRA_ARGS $1"
+                    shift
+                    ;;
+                --hal)
+                    EXTRA_ARGS="$EXTRA_ARGS --hal $2"
+                    shift 2
+                    ;;
+                *)
+                    EXTRA_ARGS="$EXTRA_ARGS $1"
+                    shift
+                    ;;
+            esac
+        done
+
+        setup_sandbox
+        start_daemons
+        # shellcheck disable=SC2086
+        chroot "$SANDBOX" /tmp/lupin_cam_shot shot --cam "$LENS" --out /tmp/shot_out.jpg $EXTRA_ARGS
+        mkdir -p "$(dirname "$OUT_FILE")"
+        cp -f "$SANDBOX/tmp/shot_out.jpg" "$OUT_FILE"
+        sync
+        echo "[✓] Arquivo entregue em: $OUT_FILE ($(wc -c < "$OUT_FILE") bytes)"
+        ;;
+    unmount|down)
+        teardown_all
+        ;;
+    *)
+        cat << 'USAGE'
+Uso: lupin-cam <comando> [opções]
+
+Comandos:
+  lupin-cam probe                         Lista todas as câmeras físicas/lógicas e resoluções
+  lupin-cam shot [lente] [-o arq.jpg]     Dispara foto sob demanda e libera 100% da RAM
+    Lentes: wide (50MP GN2), ultra (48MP UW), tele (48MP 5x), front (20MP) ou ID numérico
+    Opções:
+      -o, --out <caminho.jpg>   Destino da foto (padrão: /data/lupin_shot_*.jpg)
+      -r, --res <LxA>           Resolução exata (ex: 4080x3060, 4000x3000)
+      -q, --quality <1..100>    Qualidade JPEG de hardware (padrão: 95)
+      -w, --warmup <frames>     Quadros de convergência AE/AF/OIS (padrão: 15)
+      --full                    Seleciona resolução máxima não-binada do sensor
+  lupin-cam unmount                       Desmonta o sandbox e todos os loops RO
+USAGE
+        ;;
+esac
