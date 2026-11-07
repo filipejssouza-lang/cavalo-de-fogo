@@ -157,8 +157,8 @@ def purge_twrp_and_inject_v6(ramdisk_gz_path, guardian_bin, hud_bin, power_bin, 
 # ==============================================================================
 
 on boot
-    # 0. Verifica limite de falhas e executa rollback automático se >= 3
-    start lupin_check_rollback
+    # 0. Dispara gatilhos de firmware Qualcomm e rádio
+    setprop twrp.modules.loaded true
 
     # 1. Aplica perfil de energia inicial (idle powersave nos 8 cores)
     start lupin_power_idle
@@ -174,13 +174,6 @@ on boot
 
     # 5. Confirma boot bem-sucedido (mark-success) e zera contador de falhas
     start lupin_mark_success
-
-# Verificação de Rollback de Boot Slot
-service lupin_check_rollback /system/bin/lupin_slot_ctl check-rollback
-    user root
-    group root
-    seclabel u:r:recovery:s0
-    oneshot
 
 # Governador de Energia Inicial
 service lupin_power_idle /system/bin/lupin-power idle

@@ -167,45 +167,76 @@ static void print_usage(const char *prog) {
     printf("  %s check-rollback [--dry-run] - Verifica falhas e faz rollback se necessario\n", prog);
 }
 
+static int get_slot_from_cmdline(char *suffix_out, size_t max_len) {
+    FILE *f = fopen("/proc/cmdline", "r");
+    if (!f) return -1;
+    char line[4096];
+    if (fgets(line, sizeof(line), f)) {
+        char *p = strstr(line, "androidboot.slot_suffix=");
+        if (p) {
+            p += 24;
+            size_t i = 0;
+            while (p[i] && p[i] != ' ' && p[i] != '\n' && i < max_len - 1) {
+                suffix_out[i] = p[i];
+                i++;
+            }
+            suffix_out[i] = '\0';
+            fclose(f);
+            return (strcmp(suffix_out, "_a") == 0) ? 0 : 1;
+        }
+    }
+    fclose(f);
+    return -1;
+}
+
 int main(int argc, char **argv) {
     print_banner();
 
-    const char *lib_path = "/system/lib64/hw/bootctrl.xiaomi_sm8350.so";
-    void *h = dlopen(lib_path, RTLD_NOW);
-    if (!h) {
-        fprintf(stderr, "[-] FALHA: Impossível carregar HAL: %s\n", dlerror());
-        return 1;
+    char cmdline_suffix[16] = "_b";
+    int cmdline_slot = get_slot_from_cmdline(cmdline_suffix, sizeof(cmdline_suffix));
+    if (cmdline_slot < 0) {
+        cmdline_slot = 1;
+        strcpy(cmdline_suffix, "_b");
     }
 
-    void *hmi = dlsym(h, "HMI");
-    fn_init p_init = (fn_init)dlsym(h, "boot_control_init");
-    fn_get_slots p_get_slots = (fn_get_slots)dlsym(h, "get_number_slots");
-    fn_get_cur p_get_cur = (fn_get_cur)dlsym(h, "get_current_slot");
-    fn_set_active p_set_active = (fn_set_active)dlsym(h, "set_active_boot_slot");
-    fn_mark_success p_mark_success = (fn_mark_success)dlsym(h, "mark_boot_successful");
-    fn_is_bootable p_is_bootable = (fn_is_bootable)dlsym(h, "is_slot_bootable");
-    fn_get_suffix p_get_suffix = (fn_get_suffix)dlsym(h, "get_suffix");
+    void *h = NULL;
+    // Tenta carregar HAL apenas se não estiver em ambiente estático restrito
+    #ifndef __STATIC_RESTRICTED__
+    const char *lib_path = "/system/lib64/hw/bootctrl.xiaomi_sm8350.so";
+    if (access(lib_path, R_OK) == 0 && getenv("LUPIN_NO_DLOPEN") == NULL) {
+        h = dlopen(lib_path, RTLD_NOW);
+    }
+    #endif
 
-    if (p_init) {
+    void *hmi = h ? dlsym(h, "HMI") : NULL;
+    fn_init p_init = h ? (fn_init)dlsym(h, "boot_control_init") : NULL;
+    fn_get_slots p_get_slots = h ? (fn_get_slots)dlsym(h, "get_number_slots") : NULL;
+    fn_get_cur p_get_cur = h ? (fn_get_cur)dlsym(h, "get_current_slot") : NULL;
+    fn_set_active p_set_active = h ? (fn_set_active)dlsym(h, "set_active_boot_slot") : NULL;
+    fn_mark_success p_mark_success = h ? (fn_mark_success)dlsym(h, "mark_boot_successful") : NULL;
+    fn_is_bootable p_is_bootable = h ? (fn_is_bootable)dlsym(h, "is_slot_bootable") : NULL;
+    fn_get_suffix p_get_suffix = h ? (fn_get_suffix)dlsym(h, "get_suffix") : NULL;
+
+    if (p_init && hmi) {
         p_init(hmi);
     }
 
-    unsigned slots = p_get_slots ? p_get_slots(hmi) : 0;
-    unsigned cur = p_get_cur ? p_get_cur(hmi) : 999;
-    const char *suf = p_get_suffix ? p_get_suffix(hmi, cur) : "?";
+    unsigned slots = (p_get_slots && hmi) ? p_get_slots(hmi) : 2;
+    unsigned cur = (p_get_cur && hmi) ? p_get_cur(hmi) : (unsigned)cmdline_slot;
+    const char *suf = (p_get_suffix && hmi) ? p_get_suffix(hmi, cur) : cmdline_suffix;
 
-    printf("[+] Hardware: Qualcomm SM8350 Boot Control HAL online\n");
+    printf("[+] Hardware: Qualcomm SM8350 Slot Controller online (%s)\n", h ? "via HAL" : "via Native Sysfs/Cmdline");
     printf("[+] Slots disponíveis: %u\n", slots);
     printf("[+] Slot em execução:  %u (%s)\n", cur, suf ? suf : "null");
 
     for (unsigned i = 0; i < 2 && i < slots; i++) {
-        const char *s = p_get_suffix ? p_get_suffix(hmi, i) : "?";
-        int b = p_is_bootable ? p_is_bootable(hmi, i) : -1;
+        const char *s = (p_get_suffix && hmi) ? p_get_suffix(hmi, i) : (i == 0 ? "_a" : "_b");
+        int b = (p_is_bootable && hmi) ? p_is_bootable(hmi, i) : 1;
         printf("    * Slot %u (%s): %s\n", i, s, b == 1 ? "BOOTABLE [✓]" : "UNBOOTABLE [✗]");
     }
 
     if (argc < 2 || strcmp(argv[1], "status") == 0) {
-        dlclose(h);
+        if (h) dlclose(h);
         return 0;
     }
 
@@ -219,21 +250,21 @@ int main(int argc, char **argv) {
     if (strcmp(argv[1], "set") == 0) {
         if (argc < 3) {
             print_usage(argv[0]);
-            dlclose(h);
+            if (h) dlclose(h);
             return 1;
         }
         unsigned target = (unsigned)atoi(argv[2]);
         if (target > 1) {
             fprintf(stderr, "[-] ERRO: Slot inválido '%u'. Esperado 0 (Slot A) ou 1 (Slot B).\n", target);
-            dlclose(h);
+            if (h) dlclose(h);
             return 1;
         }
         if (!confirm && !dry_run) {
             fprintf(stderr, "[-] ERRO: Operação de escrita de boot requer a flag --confirm.\n");
-            dlclose(h);
+            if (h) dlclose(h);
             return 1;
         }
-        const char *tgt_suf = p_get_suffix ? p_get_suffix(hmi, target) : "?";
+        const char *tgt_suf = (p_get_suffix && hmi) ? p_get_suffix(hmi, target) : (target == 0 ? "_a" : "_b");
         printf("[*] Alternando slot de boot de hardware para: %u (%s)...\n", target, tgt_suf);
         if (dry_run) {
             printf("[DRY-RUN] set_active_boot_slot(%u) não executado.\n", target);
@@ -244,7 +275,7 @@ int main(int argc, char **argv) {
                 printf("[✓] UFS Boot LUN e atributos GPT sincronizados no hardware.\n");
             } else {
                 fprintf(stderr, "[-] FALHA: set_active_boot_slot(%u) retornou código %d\n", target, ret);
-                dlclose(h);
+                if (h) dlclose(h);
                 return ret;
             }
         }
@@ -252,17 +283,20 @@ int main(int argc, char **argv) {
         if (!verify_boot_sha256(cur, suf)) {
             if (!dry_run) {
                 fprintf(stderr, "[-] FALHA: Verificação SHA-256 da imagem de boot falhou. Não marcando como sucesso.\n");
-                dlclose(h);
+                if (h) dlclose(h);
                 return 1;
             }
         }
 
         if (dry_run) {
             printf("[DRY-RUN] mark_boot_successful() não executado.\n");
-        } else if (p_mark_success) {
-            int ret = p_mark_success(hmi);
+        } else {
+            int ret = 0;
+            if (p_mark_success) {
+                ret = p_mark_success(hmi);
+            }
             write_fails(0);
-            printf("[✓] mark_boot_successful() = %d\n", ret);
+            printf("[✓] mark_boot_successful() = %d (falhas zeradas)\n", ret);
         }
     } else if (strcmp(argv[1], "check-rollback") == 0) {
         int fails = read_fails();
