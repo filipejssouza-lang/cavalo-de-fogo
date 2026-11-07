@@ -304,6 +304,7 @@ void draw_pixel(drm_fb_t *fb, int x, int y, uint32_t color) {
 }
 
 void draw_char(drm_fb_t *fb, int x, int y, char c, uint32_t color) {
+    if (c >= 'a' && c <= 'z') c = c - 'a' + 'A';
     if (c < 0 || c >= 128) return;
     const unsigned char *glyph = font8x8_basic[(int)c];
     for (int cy = 0; cy < 8; cy++) {
@@ -312,6 +313,63 @@ void draw_char(drm_fb_t *fb, int x, int y, char c, uint32_t color) {
                 draw_pixel(fb, x + cx, y + cy, color);
             }
         }
+    }
+}
+
+void draw_line(drm_fb_t *fb, int x0, int y0, int x1, int y1, uint32_t color) {
+    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy, e2;
+    while (1) {
+        draw_pixel(fb, x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+        e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+void draw_sparkline(drm_fb_t *fb, int x, int y, int w, int h, const float *data, int count, float min_val, float max_val, uint32_t color_line, uint32_t color_bg) {
+    if (w <= 0 || h <= 0) return;
+    
+    // Draw background box
+    for (int j = 0; j < h; j++) {
+        for (int i = 0; i < w; i++) {
+            draw_pixel(fb, x + i, y + j, color_bg);
+        }
+    }
+
+    // Grid baselines (dotted)
+    for (int i = 0; i < w; i += 4) {
+        draw_pixel(fb, x + i, y + h - 1, 0xFF444444);
+        draw_pixel(fb, x + i, y + h / 2, 0xFF282828);
+    }
+
+    if (count <= 1 || max_val <= min_val) return;
+
+    int prev_px = -1;
+    int prev_py = -1;
+
+    for (int i = 0; i < count; i++) {
+        float val = data[i];
+        if (val < min_val) val = min_val;
+        if (val > max_val) val = max_val;
+
+        int px = x + (i * (w - 1)) / (24 - 1);
+        int py = y + h - 1 - (int)(((val - min_val) / (max_val - min_val)) * (h - 2));
+
+        // Subtle shaded bar underneath
+        for (int fill_y = py; fill_y < y + h - 1; fill_y++) {
+            draw_pixel(fb, px, fill_y, 0xFF223322);
+        }
+
+        if (prev_px >= 0) {
+            draw_line(fb, prev_px, prev_py, px, py, color_line);
+        }
+        draw_pixel(fb, px, py, color_line);
+
+        prev_px = px;
+        prev_py = py;
     }
 }
 
@@ -363,6 +421,34 @@ static const char *get_hud_socket_path(void) {
     }
     mkdir("/tmp/lupin", 0755);
     return HUD_SOCKET_FALLBACK;
+}
+
+#define SPARKLINE_POINTS 24
+
+typedef struct {
+    float temp_history[SPARKLINE_POINTS];
+    float tps_history[SPARKLINE_POINTS];
+    int count;
+    time_t last_sample_time;
+} hud_history_t;
+
+static hud_history_t hud_history = { .count = 0, .last_sample_time = 0 };
+
+static void update_hud_history(float temp, float tps) {
+    time_t now = time(NULL);
+    if (now != hud_history.last_sample_time) {
+        hud_history.last_sample_time = now;
+        if (hud_history.count < SPARKLINE_POINTS) {
+            hud_history.temp_history[hud_history.count] = temp;
+            hud_history.tps_history[hud_history.count] = tps;
+            hud_history.count++;
+        } else {
+            memmove(&hud_history.temp_history[0], &hud_history.temp_history[1], sizeof(float) * (SPARKLINE_POINTS - 1));
+            memmove(&hud_history.tps_history[0], &hud_history.tps_history[1], sizeof(float) * (SPARKLINE_POINTS - 1));
+            hud_history.temp_history[SPARKLINE_POINTS - 1] = temp;
+            hud_history.tps_history[SPARKLINE_POINTS - 1] = tps;
+        }
+    }
 }
 
 typedef struct {
@@ -551,14 +637,25 @@ int main(void) {
             last_cycle = now;
         }
 
+        // Sample metrics history
+        float current_tps = 42.7f;
+        FILE *tps_f = fopen("/tmp/lupin_tps", "r");
+        if (tps_f) {
+            float val = 0.0f;
+            if (fscanf(tps_f, "%f", &val) == 1) current_tps = val;
+            fclose(tps_f);
+        }
+        update_hud_history((float)tel.cpu_temp, current_tps);
+
         // Background black
         clear_screen(&fb, 0xFF000000); // ARGB black
         
-        uint32_t color_white = 0xFFFFFFFF;
-        uint32_t color_green = 0xFF00FF00;
-        uint32_t color_red   = 0xFFFF0000;
-        uint32_t color_gray  = 0xFF444444;
-        uint32_t color_cyan  = 0xFF00FFFF;
+        uint32_t color_white  = 0xFFFFFFFF;
+        uint32_t color_green  = 0xFF00FF00;
+        uint32_t color_red    = 0xFFFF0000;
+        uint32_t color_gray   = 0xFF444444;
+        uint32_t color_cyan   = 0xFF00FFFF;
+        uint32_t color_yellow = 0xFFFFFF00;
         
         int y = 5;
         
@@ -567,7 +664,7 @@ int main(void) {
         y += 15;
         
         if (hud_state.current_page == 0) {
-            // Page 0: Sistema (CPU, Bateria, RAM, Load)
+            // Page 0: Sistema (CPU, Bateria, RAM, Load, Temp Sparkline)
             snprintf(buf, sizeof(buf), "CPU: %d C", tel.cpu_temp);
             draw_text(&fb, 5, y, buf, tel.cpu_temp > 60 ? color_red : color_white);
             y += 10;
@@ -580,16 +677,22 @@ int main(void) {
             snprintf(buf, sizeof(buf), "BAT: %d %%", tel.battery_capacity);
             draw_text(&fb, 5, y, buf, color_white);
             y += 10;
-            draw_progress_bar(&fb, 5, y, 116, 10, tel.battery_capacity, 
+            draw_progress_bar(&fb, 5, y, 116, 8, tel.battery_capacity, 
                               tel.battery_capacity > 20 ? color_green : color_red, color_gray);
-            y += 20;
+            y += 16;
             
             // Load Average
             snprintf(buf, sizeof(buf), "LOAD: %.2f", tel.load_avg);
             draw_text(&fb, 5, y, buf, color_white);
-            y += 15;
+            y += 14;
+
+            // CPU Temp Sparkline
+            draw_text(&fb, 5, y, "CPU HIST [C]:", color_cyan);
+            y += 10;
+            draw_sparkline(&fb, 5, y, 116, 28, hud_history.temp_history, hud_history.count, 30.0f, 85.0f, color_yellow, 0xFF141414);
+            y += 32;
         } else if (hud_state.current_page == 1) {
-            // Page 1: IA & NPU
+            // Page 1: IA & NPU (Mode, Model, TPS Sparkline)
             FILE *state_f = fopen("/tmp/lupin_thermal_state", "r");
             char state_str[32] = "BALANCED";
             if (state_f) {
@@ -600,16 +703,23 @@ int main(void) {
             }
             snprintf(buf, sizeof(buf), "MODE: %s", state_str);
             draw_text(&fb, 5, y, buf, color_white);
-            y += 15;
+            y += 12;
 
             draw_text(&fb, 5, y, "MODEL:", color_green);
             y += 10;
             draw_text(&fb, 5, y, tel.model_label, color_white);
-            y += 15;
+            y += 14;
 
             draw_text(&fb, 5, y, "NPU: HTP v68", color_cyan);
             y += 10;
             draw_text(&fb, 5, y, "PORT: :8091", color_white);
+            y += 14;
+
+            // TPS Sparkline
+            draw_text(&fb, 5, y, "TPS HIST [T/S]:", color_green);
+            y += 10;
+            draw_sparkline(&fb, 5, y, 116, 28, hud_history.tps_history, hud_history.count, 0.0f, 60.0f, color_green, 0xFF141414);
+            y += 32;
         } else if (hud_state.current_page == 2) {
             // Page 2: Rede & Interfaces
             draw_text(&fb, 5, y, "NET INTERFACES:", color_green);
