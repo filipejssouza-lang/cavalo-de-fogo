@@ -690,6 +690,19 @@ void gather_telemetry(telemetry_data_t *data) {
 }
 
 int main(void) {
+    int lock_fd = open("/tmp/lupin_hud.lock", O_CREAT | O_RDWR, 0644);
+    if (lock_fd >= 0) {
+        struct flock fl;
+        memset(&fl, 0, sizeof(fl));
+        fl.l_type = F_WRLCK;
+        fl.l_whence = SEEK_SET;
+        if (fcntl(lock_fd, F_SETLK, &fl) < 0) {
+            fprintf(stderr, "[-] lupin_subdisplay_hud already running. Exiting redundant instance.\n");
+            close(lock_fd);
+            return 0;
+        }
+    }
+
     drm_fb_t fb;
     
     signal(SIGINT, handle_signal);
@@ -714,18 +727,10 @@ int main(void) {
         handle_socket(sock);
         
         time_t now = time(NULL);
-        double idle = difftime(now, hud_state.last_activity);
-        if (idle > 300 && hud_state.backlight_percent > 0) {
-            hud_state.backlight_percent = 0;
-            update_backlight(0);
-        } else if (idle > 60 && idle <= 300 && hud_state.backlight_percent > 30) {
-            hud_state.backlight_percent = 30;
-            update_backlight(30);
-        }
         
-        // Auto-cycle every 10s if not dim
+        // Continuous auto-cycle every 8 seconds across all 4 pages (Always-On)
         static time_t last_cycle = 0;
-        if (difftime(now, last_cycle) > 10 && idle <= 60) {
+        if (difftime(now, last_cycle) >= 8) {
             hud_state.current_page = (hud_state.current_page + 1) % 4;
             last_cycle = now;
         }
