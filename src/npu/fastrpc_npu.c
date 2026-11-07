@@ -10,6 +10,7 @@
 #include <sys/un.h>
 #include <sys/mman.h>
 #include <stdint.h>
+#include <time.h>
 #include <linux/dma-buf.h>
 
 #define FASTRPC_DEVICE "/dev/msm_fastrpc-2"
@@ -25,7 +26,7 @@ struct dma_heap_allocation_data {
 
 #define DMA_HEAP_IOC_MAGIC 'H'
 #define DMA_HEAP_IOCTL_ALLOC _IOWR(DMA_HEAP_IOC_MAGIC, 0x0, struct dma_heap_allocation_data)
-#define SOCK_PATH "/tmp/lupin_npu.sock"
+#define SOCK_PATH "/run/lupin/npu.sock"
 
 // IOCTL values for FastRPC (simplified for the demonstration, based on general msm_fastrpc)
 #define FASTRPC_IOCTL_INIT_ATTACH _IO('R', 1)
@@ -39,6 +40,7 @@ struct fastrpc_ioctl_invoke {
 
 static int frpc_fd = -1;
 static int sock_fd = -1;
+static bool is_simulated = false;
 
 bool fastrpc_npu_init(void) {
     frpc_fd = open(FASTRPC_DEVICE, O_RDWR);
@@ -152,8 +154,12 @@ void fastrpc_npu_loop(void) {
                     ioctl(frpc_fd, FASTRPC_IOCTL_INVOKE, &inv);
                 }
                 
-                // Return dummy logits
-                const char *resp = "NPU_ACK_LOGITS";
+                // Return deterministic JSON response
+                const char *mode = is_simulated ? "simulated" : "real";
+                char resp[256];
+                snprintf(resp, sizeof(resp),
+                    "{\"mode\":\"%s\",\"status\":\"ok\",\"tensor_size\":%zu,\"timestamp\":%ld\n",
+                    mode, tensor_size, (long)time(NULL));
                 int ret = write(client_fd, resp, strlen(resp));
                 (void)ret;
             }

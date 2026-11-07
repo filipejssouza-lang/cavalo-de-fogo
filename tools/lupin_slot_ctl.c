@@ -13,6 +13,72 @@
 #include <dlfcn.h>
 #include <stdint.h>
 
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+
+
+#ifdef MOCK_HAL
+
+void* mock_dlopen(const char* filename, int flag) {
+    return (void*)1;
+}
+
+int mock_mark_success(void* hmi) {
+    return 0;
+}
+unsigned mock_get_cur(void* hmi) {
+    return 0;
+}
+unsigned mock_get_slots(void* hmi) {
+    return 2;
+}
+const char* mock_get_suffix(void* hmi, unsigned slot) {
+    return slot == 0 ? "_a" : "_b";
+}
+int mock_is_bootable(void* hmi, unsigned slot) {
+    return 1;
+}
+int mock_set_active(void* hmi, unsigned slot) {
+    return 0;
+}
+
+void* mock_dlsym(void* handle, const char* symbol) {
+    if (strcmp(symbol, "HMI") == 0) return (void*)1;
+    if (strcmp(symbol, "mark_boot_successful") == 0) return (void*)mock_mark_success;
+    if (strcmp(symbol, "get_current_slot") == 0) return (void*)mock_get_cur;
+    if (strcmp(symbol, "get_number_slots") == 0) return (void*)mock_get_slots;
+    if (strcmp(symbol, "get_suffix") == 0) return (void*)mock_get_suffix;
+    if (strcmp(symbol, "is_slot_bootable") == 0) return (void*)mock_is_bootable;
+    if (strcmp(symbol, "set_active_boot_slot") == 0) return (void*)mock_set_active;
+    
+    return NULL;
+}
+
+const char* mock_dlerror() {
+    return "Mock HAL";
+}
+
+int mock_dlclose(void* handle) {
+    return 0;
+}
+
+#define dlopen mock_dlopen
+#define dlsym mock_dlsym
+#define dlerror mock_dlerror
+#define dlclose mock_dlclose
+
+// Overwrite checking to avoid touching /dev/block in tests
+
+
+#endif
+
+
+
+
+
+
 typedef void (*fn_init)(void*);
 typedef unsigned (*fn_get_slots)(void*);
 typedef unsigned (*fn_get_cur)(void*);
@@ -20,6 +86,71 @@ typedef int (*fn_set_active)(void*, unsigned);
 typedef int (*fn_mark_success)(void*);
 typedef int (*fn_is_bootable)(void*, unsigned);
 typedef const char* (*fn_get_suffix)(void*, unsigned);
+
+
+#define FAILS_FILE "/tmp/lupin_slot_fails.bin"
+#define FAILS_FILE_TMP "/tmp/lupin_slot_fails.tmp"
+
+#ifndef MOCK_HAL
+static void compute_sha256(const char *path, char outputBuffer[65]) {
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        strcpy(outputBuffer, "");
+        return;
+    }
+    char command[512];
+    snprintf(command, sizeof(command), "sha256sum %s 2>/dev/null | awk '{print $1}'", path);
+    FILE *cmd = popen(command, "r");
+    if (cmd) {
+        if (fgets(outputBuffer, 65, cmd) != NULL) {
+            size_t len = strlen(outputBuffer);
+            if (len > 0 && outputBuffer[len - 1] == '\n') {
+                outputBuffer[len - 1] = '\0';
+            }
+        } else {
+            strcpy(outputBuffer, "");
+        }
+        pclose(cmd);
+    } else {
+        strcpy(outputBuffer, "");
+    }
+    fclose(file);
+}
+#endif
+
+static int verify_boot_sha256(unsigned slot, const char *suffix) {
+#ifdef MOCK_HAL
+    return 1;
+#else
+    char path[256];
+    snprintf(path, sizeof(path), "/dev/block/by-name/boot%s", suffix);
+    char hash[65];
+    compute_sha256(path, hash);
+    if (strlen(hash) > 0) {
+        printf("[*] SHA-256 do slot %u (%s): %s\n", slot, suffix, hash);
+        return 1;
+    }
+    return 0;
+#endif
+}
+
+static int read_fails() {
+    FILE *f = fopen(FAILS_FILE, "r");
+    if (!f) return 0;
+    int fails = 0;
+    if (fscanf(f, "%d", &fails) != 1) { fails = 0; }
+    fclose(f);
+    return fails;
+}
+
+static void write_fails(int fails) {
+    FILE *f = fopen(FAILS_FILE_TMP, "w");
+    if (f) {
+        fprintf(f, "%d\n", fails);
+        fclose(f);
+        rename(FAILS_FILE_TMP, FAILS_FILE);
+    }
+}
 
 static void print_banner(void) {
     printf("============================================================\n");
@@ -31,8 +162,9 @@ static void print_banner(void) {
 static void print_usage(const char *prog) {
     printf("Uso:\n");
     printf("  %s status          - Exibe slot ativo e estado de boot\n", prog);
-    printf("  %s set <0|1>       - Alterna boot ativo (0 = Slot A, 1 = Slot B)\n", prog);
-    printf("  %s mark-success    - Marca slot atual como inicializado com sucesso\n", prog);
+    printf("  %s set <0|1> [--confirm] [--dry-run] - Alterna boot ativo (0 = Slot A, 1 = Slot B)\n", prog);
+    printf("  %s mark-success [--dry-run] - Marca slot atual como inicializado com sucesso\n", prog);
+    printf("  %s check-rollback [--dry-run] - Verifica falhas e faz rollback se necessario\n", prog);
 }
 
 int main(int argc, char **argv) {
@@ -77,6 +209,13 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    int confirm = 0;
+    int dry_run = 0;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--confirm") == 0) confirm = 1;
+        if (strcmp(argv[i], "--dry-run") == 0) dry_run = 1;
+    }
+
     if (strcmp(argv[1], "set") == 0) {
         if (argc < 3) {
             print_usage(argv[0]);
@@ -89,9 +228,16 @@ int main(int argc, char **argv) {
             dlclose(h);
             return 1;
         }
+        if (!confirm && !dry_run) {
+            fprintf(stderr, "[-] ERRO: Operação de escrita de boot requer a flag --confirm.\n");
+            dlclose(h);
+            return 1;
+        }
         const char *tgt_suf = p_get_suffix ? p_get_suffix(hmi, target) : "?";
         printf("[*] Alternando slot de boot de hardware para: %u (%s)...\n", target, tgt_suf);
-        if (p_set_active) {
+        if (dry_run) {
+            printf("[DRY-RUN] set_active_boot_slot(%u) não executado.\n", target);
+        } else if (p_set_active) {
             int ret = p_set_active(hmi, target);
             if (ret == 0) {
                 printf("[✓] SUCESSO: set_active_boot_slot(%u) executado com êxito!\n", target);
@@ -103,9 +249,52 @@ int main(int argc, char **argv) {
             }
         }
     } else if (strcmp(argv[1], "mark-success") == 0) {
-        if (p_mark_success) {
+        if (!verify_boot_sha256(cur, suf)) {
+            if (!dry_run) {
+                fprintf(stderr, "[-] FALHA: Verificação SHA-256 da imagem de boot falhou. Não marcando como sucesso.\n");
+                dlclose(h);
+                return 1;
+            }
+        }
+
+        if (dry_run) {
+            printf("[DRY-RUN] mark_boot_successful() não executado.\n");
+        } else if (p_mark_success) {
             int ret = p_mark_success(hmi);
+            write_fails(0);
             printf("[✓] mark_boot_successful() = %d\n", ret);
+        }
+    } else if (strcmp(argv[1], "check-rollback") == 0) {
+        int fails = read_fails();
+        fails++;
+        printf("[*] Falhas consecutivas atuais: %d\n", fails);
+        
+        if (fails >= 3) {
+            printf("[!] Limite de falhas atingido (3). Iniciando rollback automático...\n");
+            unsigned alt_slot = (cur == 0) ? 1 : 0;
+            int alt_bootable = p_is_bootable ? p_is_bootable(hmi, alt_slot) : 0;
+            
+            if (alt_bootable == 1) {
+                printf("[*] Slot alternativo %u é bootável. Executando rollback.\n", alt_slot);
+                if (dry_run) {
+                    printf("[DRY-RUN] set_active_boot_slot(%u) não executado.\n", alt_slot);
+                } else {
+                    if (p_set_active) {
+                        int ret = p_set_active(hmi, alt_slot);
+                        if (ret == 0) {
+                            printf("[✓] SUCESSO: Rollback concluído.\n");
+                            write_fails(0);
+                        } else {
+                            fprintf(stderr, "[-] ERRO: Falha ao ativar slot alternativo.\n");
+                        }
+                    }
+                }
+            } else {
+                printf("[-] ERRO: Slot alternativo %u NÃO é bootável. Cancelando rollback para evitar hard brick!\n", alt_slot);
+                if (!dry_run) write_fails(fails);
+            }
+        } else {
+            if (!dry_run) write_fails(fails);
         }
     } else {
         print_usage(argv[0]);

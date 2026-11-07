@@ -12,6 +12,7 @@
 #include <dirent.h>
 #include "net_watchdog.h"
 #include "../npu/fastrpc_npu.h"
+#include "../cpu/governor_daemon.h"
 
 #define ZRAM_DISKSIZE_BYTES 12884901888ULL // 12GB
 #define ZRAM_DISKSIZE_STR "12884901888"
@@ -170,31 +171,6 @@ static void sentinel_loop() {
     }
 }
 
-// 5. Thermal Watchdog (Target: keep Peltier-cooled SoC under 75C under heavy AI workloads)
-static void thermal_loop() {
-    while (1) {
-        DIR *dir = opendir("/sys/class/thermal");
-        if (dir) {
-            struct dirent *ent;
-            while ((ent = readdir(dir)) != NULL) {
-                if (strncmp(ent->d_name, "thermal_zone", 12) == 0) {
-                    char path[256];
-                    snprintf(path, sizeof(path), "/sys/class/thermal/%s/temp", ent->d_name);
-                    char buf[32] = {0};
-                    read_file_to_buf(path, buf, sizeof(buf));
-                    int temp = atoi(buf);
-                    if (temp > 75000 || (temp > 75 && temp < 1000)) {
-                        char warn[128];
-                        snprintf(warn, sizeof(warn), "[LupinGuard] ALERTA: %s atingiu %d mC!\n", ent->d_name, temp);
-                        log_kmsg(warn);
-                    }
-                }
-            }
-            closedir(dir);
-        }
-        sleep(10);
-    }
-}
 
 // 6. Setup DSP Environment & Start Daemon
 static void setup_dsp_env() {
@@ -230,7 +206,7 @@ int main(void) {
 
     pid_t thermal_pid = fork();
     if (thermal_pid == 0) {
-        thermal_loop();
+        governor_daemon_loop();
         exit(0);
     }
 

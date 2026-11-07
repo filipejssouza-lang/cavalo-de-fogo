@@ -9,8 +9,22 @@
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        printf("Usage: %s <idle|burst <cmd>|status>\n", argv[0]);
+        printf("Usage: %s <idle|balanced|burst <cmd>|status|thermal status>\n", argv[0]);
         return 1;
+    }
+
+    if (strcmp(argv[1], "thermal") == 0 && argc == 3 && strcmp(argv[2], "status") == 0) {
+        FILE *f = fopen("/tmp/lupin_thermal_state", "r");
+        if (f) {
+            char state[64] = {0};
+            if (fgets(state, sizeof(state), f)) {
+                printf("Thermal State: %s\n", state);
+            }
+            fclose(f);
+        } else {
+            printf("Thermal State: UNKNOWN\n");
+        }
+        return 0;
     }
 
     if (strcmp(argv[1], "idle") == 0) {
@@ -18,6 +32,12 @@ int main(int argc, char **argv) {
             printf("CPU set to IDLE mode.\n");
         } else {
             printf("Failed to set CPU to IDLE mode.\n");
+        }
+    } else if (strcmp(argv[1], "balanced") == 0) {
+        if (lupin_power_balanced()) {
+            printf("CPU set to BALANCED mode.\n");
+        } else {
+            printf("Failed to set CPU to BALANCED mode.\n");
         }
     } else if (strcmp(argv[1], "burst") == 0) {
         if (argc < 3) {
@@ -27,6 +47,12 @@ int main(int argc, char **argv) {
 
         if (lupin_power_burst()) {
             printf("CPU set to BURST mode.\n");
+            // Signal governor daemon
+            FILE *f = fopen("/tmp/lupin_req_burst", "w");
+            if (f) {
+                fprintf(f, "1");
+                fclose(f);
+            }
         } else {
             printf("Failed to set CPU to BURST mode.\n");
             return 1;
@@ -51,6 +77,8 @@ int main(int argc, char **argv) {
             waitpid(pid, NULL, 0);
             printf("Computation finished. Returning to IDLE mode.\n");
             lupin_power_idle();
+            // We do not need to signal daemon to go back, it has 5s timeout or will adjust automatically,
+            // but we can signal it's done by writing another IPC or letting it timeout.
         } else {
             perror("fork");
             lupin_power_idle();
@@ -60,7 +88,7 @@ int main(int argc, char **argv) {
         lupin_power_status();
     } else {
         printf("Unknown command: %s\n", argv[1]);
-        printf("Usage: %s <idle|burst <cmd>|status>\n", argv[0]);
+        printf("Usage: %s <idle|balanced|burst <cmd>|status|thermal status>\n", argv[0]);
         return 1;
     }
 

@@ -107,6 +107,9 @@ def purge_twrp_and_inject_sovereign(ramdisk_gz_path, guardian_bin, hud_bin, work
 # ==============================================================================
 
 on boot
+    # 0. Verifica contador de falhas persistente para rollback
+    start lupin_check_rollback
+
     # 1. Aciona o Guardião Mestre do LupinOS
     start lupinos_guard
 
@@ -115,6 +118,9 @@ on boot
 
     # 3. Dispara a carga de ambiente autônomo (SSH, Redis, Qwen 14B)
     start cavalo_ai_fallback
+
+    # 4. Confirma boot bem-sucedido (mark-success) e zera falhas
+    start lupin_mark_success
 
 # Guardião de Silício (ZRAM 12GB, Thermal Watchdog, WakeLock, DSP)
 service lupinos_guard /sbin/lupinos_guard
@@ -129,8 +135,22 @@ service lupin_hud /sbin/lupin_subdisplay_hud
     group root
     seclabel u:r:recovery:s0
 
+# Valida falhas consecutivas antes do user-space
+service lupin_check_rollback /sbin/lupin_slot_ctl check-rollback
+    user root
+    group root
+    seclabel u:r:recovery:s0
+    oneshot
+
 # Bootstrap de Raiz Linux (Alpine/Debian Chroot + Llama + Net)
 service cavalo_ai_fallback /system/bin/sh /data/start_chroot_auto.sh
+    user root
+    group root
+    seclabel u:r:recovery:s0
+    oneshot
+
+# Marco zero-regressão, limpa as falhas se deu sucesso
+service lupin_mark_success /sbin/lupin_slot_ctl mark-success
     user root
     group root
     seclabel u:r:recovery:s0

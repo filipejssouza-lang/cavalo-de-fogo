@@ -69,6 +69,38 @@ bool lupin_power_idle(void) {
     return true;
 }
 
+bool lupin_power_balanced(void) {
+    // Cores 0-3 (Cortex-A55) to schedutil/balanced
+    for (int i = 0; i <= 3; i++) {
+        set_cpu_gov(i, "schedutil");
+        set_cpu_freq(i, "300000", "1804800"); 
+    }
+    
+    // Cores 4-6 (Cortex-A78) to schedutil, mid freq
+    for (int i = 4; i <= 6; i++) {
+        set_cpu_gov(i, "schedutil");
+        set_cpu_freq(i, "710400", "2419200"); 
+    }
+    
+    // Core 7 (Cortex-X1) to schedutil, mid freq
+    set_cpu_gov(7, "schedutil");
+    set_cpu_freq(7, "844800", "2841600"); 
+    
+    return true;
+}
+
+void lupin_power_set_cooling(bool active) {
+    // Real implementation: scan /sys/class/thermal/ for cooling_device* that is our fan/peltier
+    // For testing/mock environments, we write to a mock file or just a specific sysfs node
+    const char *mock_path = getenv("LUPIN_MOCK_COOLING_NODE");
+    if (mock_path) {
+        write_file(mock_path, active ? "1" : "0");
+    } else {
+        // Fallback or explicit known path
+        write_file("/sys/class/thermal/cooling_device0/cur_state", active ? "1" : "0");
+    }
+}
+
 bool lupin_power_burst(void) {
     // Leave Cores 0-6 alone or keep them somewhat low
     

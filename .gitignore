@@ -6,3 +6,5 @@
 *.so
 tools/libcdsprpc.so
 /target/
+__pycache__/
+*.pyc

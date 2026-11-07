@@ -1,10 +1,20 @@
 CC ?= gcc
-CFLAGS = -O3 -static -march=armv8.4-a+dotprod -ffast-math -Wall
+ARCH_Check := $(shell $(CC) -dumpmachine 2>/dev/null)
+
+STATIC ?=
+ifneq (,$(findstring aarch64,$(ARCH_Check)))
+    ARCH_FLAGS = -march=armv8.4-a+dotprod
+    STATIC ?= -static
+else
+    ARCH_FLAGS =
+endif
+
+CFLAGS = -O3 $(STATIC) $(ARCH_FLAGS) -ffast-math -Wall
 LDFLAGS = -lm -lpthread -ldl
 
 SRC_CPU = src/cpu/neon_kernels.c src/cpu/governor_control.c
 SRC_NPU = src/npu/fastrpc_cdsp.c src/npu/fastrpc_npu.c
-SRC_GUARDIAN = src/guardian/lupinos_guard.c src/guardian/net_watchdog.c
+SRC_GUARDIAN = src/guardian/lupinos_guard.c src/guardian/net_watchdog.c src/cpu/governor_daemon.c src/cpu/governor_control.c
 SRC_BENCH = src/bench/bench_extreme.c
 
 OBJ_CPU = $(SRC_CPU:.c=.o)
@@ -21,11 +31,11 @@ hud: build/drm_subdisplay
 
 build/drm_subdisplay: src/display/drm_subdisplay.c
 	@mkdir -p build
-	$(CC) -O2 -static -Wall $< -o $@ $(LDFLAGS)
+	$(CC) -O2 $(STATIC) -Wall $< -o $@ $(LDFLAGS)
 
 build/lupin-power: src/cpu/lupin_power.c src/cpu/governor_control.c
 	@mkdir -p build
-	$(CC) -O2 -static -Wall $^ -o $@ $(LDFLAGS)
+	$(CC) -O2 $(STATIC) -Wall $^ -o $@ $(LDFLAGS)
 
 build/lupinos_guard: $(OBJ_GUARDIAN) $(OBJ_NPU)
 	@mkdir -p build
@@ -43,3 +53,18 @@ clean:
 	rm -f $(OBJ_CPU) $(OBJ_NPU) $(OBJ_GUARDIAN) $(OBJ_BENCH)
 
 .PHONY: all clean hud
+
+build/lupinctl: src/lupinctl/lupinctl.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $< -o $@
+
+lupinctl: build/lupinctl
+
+build/lupin_slot_ctl: tools/lupin_slot_ctl.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
+
+slot_ctl: build/lupin_slot_ctl
+
+TARGETS += build/lupinctl build/lupin_slot_ctl
+

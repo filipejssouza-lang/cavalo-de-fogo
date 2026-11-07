@@ -1,13 +1,15 @@
-name: Build & Package Lupin Bare-Metal OS v3
+name: Build & Package Lupin Bare-Metal OS v6
 
 on:
   push:
     tags:
       - 'v*'
     paths:
-      - 'src/guardian/**'
+      - 'src/**'
+      - 'crates/**'
       - 'tools/**'
-      - '.github/workflows/build-lupinos-v3.yml'
+      - 'Makefile'
+      - '.github/workflows/build-lupinos-v6.yml'
   workflow_dispatch:
     inputs:
       base_boot_url:
@@ -16,7 +18,7 @@ on:
         default: ''
 
 jobs:
-  build-guardian:
+  build-lupinos-v6:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -31,32 +33,44 @@ jobs:
           chmod +x avbtool
           sudo mv avbtool /usr/local/bin/
 
-      - name: Compile Native LupinGuard (Static AArch64)
+      - name: Compile Sovereign C Binaries (AArch64 Static)
         run: |
+          CC=aarch64-linux-gnu-gcc make
           mkdir -p bin
-          aarch64-linux-gnu-gcc -static -O2 -s src/guardian/lupinos_guard.c -o bin/lupinos_guard
-          file bin/lupinos_guard
-          ls -la bin/lupinos_guard
+          cp build/lupinos_guard bin/lupinos_guard
+          cp build/drm_subdisplay bin/lupin_subdisplay_hud
+          cp build/lupin-power bin/lupin-power
+          cp build/lupinctl bin/lupinctl
+          cp build/lupin_slot_ctl bin/lupin_slot_ctl
+          ls -lh bin/
 
-      - name: Verify Build Tools Syntax
+      - name: Run Host-Runnable Tests
         run: |
-          python3 -m py_compile tools/build_os_v3.py
-          python3 tools/build_os_v3.py --help
+          cargo test --manifest-path crates/lupinos-daemon/Cargo.toml
+          chmod +x tools/test_sovereign_control.sh
+          ./tools/test_sovereign_control.sh
 
-      - name: Optional Assemble Full Boot Image
+      - name: Assemble Sovereign v6 Boot Image
         if: ${{ inputs.base_boot_url != '' }}
         run: |
           curl -L -o base_boot.img "${{ inputs.base_boot_url }}"
-          python3 tools/build_os_v3.py --boot base_boot.img --guardian bin/lupinos_guard --out lupin_baremetal_star_v3.img
-          sha256sum lupin_baremetal_star_v3.img > sha256_image.txt
+          python3 tools/build_os_v6.py \
+            --boot base_boot.img \
+            --guardian bin/lupinos_guard \
+            --hud bin/lupin_subdisplay_hud \
+            --power bin/lupin-power \
+            --lupinctl bin/lupinctl \
+            --slot-ctl bin/lupin_slot_ctl \
+            --out lupin_baremetal_star_v6_sovereign.img
+          sha256sum lupin_baremetal_star_v6_sovereign.img > sha256_image.txt
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: lupinos-v3-artifacts
+          name: lupinos-v6-artifacts
           path: |
-            bin/lupinos_guard
-            lupin_baremetal_star_v3.img
+            bin/*
+            lupin_baremetal_star_v6_sovereign.img
             sha256_image.txt
           if-no-files-found: warn
 
@@ -65,8 +79,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
-            bin/lupinos_guard
-            lupin_baremetal_star_v3.img
+            bin/*
+            lupin_baremetal_star_v6_sovereign.img
             sha256_image.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
