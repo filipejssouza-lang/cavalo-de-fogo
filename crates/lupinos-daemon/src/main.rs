@@ -1,5 +1,6 @@
 mod uds_server;
 mod lora_manager;
+pub mod telemetry;
 // 🐺 Sovereign LupinOS Hardware Daemon & Heterogeneous Inference Server v0.5.0
 // Snapdragon 888 (SM8350) - Xiaomi Mi 11 Ultra (star)
 // Features:
@@ -133,7 +134,6 @@ fn bind_core_7() {
         let rc = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
         if rc == 0 {
             println!("⚡ [CPU] Pinned Daemon Main Thread to Prime Core 7 (Cortex-X1 @ 2.84 GHz)");
-            let body = String::new();
         } else {
             eprintln!("⚠️ [CPU] Running without strict core pinning (Non-fatal)");
         }
@@ -273,7 +273,7 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
 
             let mut checksum = 0.0f32;
             for _ in 0..1000 {
-                unsafe { mojo_rmsnorm_f32(x.as_ptr(), w.as_ptr(), out.as_mut_ptr(), dim as i32, 1e-5) };
+                mojo_rmsnorm_f32(x.as_ptr(), w.as_ptr(), out.as_mut_ptr(), dim as i32, 1e-5);
                 checksum += out[0];
             }
             std::hint::black_box(checksum);
@@ -404,17 +404,21 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
                 let _ = stream.write_all(resp.as_bytes());
             }
         } else if req.starts_with("GET /health") {
-            let npu_socket_exists = std::path::Path::new("/run/lupin/npu.sock").exists();
+            let npu_socket_exists = std::path::Path::new("/run/lupin/npu.sock").exists()
+                || std::path::Path::new("/tmp/lupin/npu.sock").exists();
             let model_loaded = std::env::var("QNN_MODEL_PATH").map(|p| std::path::Path::new(&p).exists()).unwrap_or(false);
             let mode = if model_loaded { "real" } else { "simulated" };
-            let body = format!("{{\"status\":\"online\",\"npu\":\"hexagon-780\",\"model_loaded\":{},\"mode\":\"{}\"}}\n", model_loaded, mode);
+            let body = format!("{{\"status\":\"online\",\"npu\":\"hexagon-780\",\"npu_socket\":{},\"model_loaded\":{},\"mode\":\"{}\"}}\n", npu_socket_exists, model_loaded, mode);
             let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
             let _ = stream.write_all(response.as_bytes());
         } else if req.starts_with("GET /metrics") {
             let total = state.total_inferences.load(Ordering::Relaxed);
-            let mut body = String::from("{\"avg_latency_ms\":15.5,\"tokens_per_sec\":42.7,\"memory_usage_mb\":128.0,\"total_inferences\":");
-            body.push_str(&total.to_string());
-            body.push_str("}\n");
+            let telem = crate::telemetry::SiliconTelemetry::collect();
+            let body = format!(
+                "{{\"avg_latency_ms\":15.5,\"tokens_per_sec\":42.7,\"memory_usage_mb\":128.0,\"total_inferences\":{},\"telemetry\":{}}}\n",
+                total,
+                telem.to_json().trim()
+            );
             let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
             let _ = stream.write_all(response.as_bytes());
         } else if req.starts_with("POST /v1/chat/completions") {
@@ -422,7 +426,8 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
             if let Some(pos) = req.find("\r\n\r\n") {
                 body = req[pos + 4..].to_string();
             }
-            let npu_result = std::os::unix::net::UnixStream::connect("/run/lupin/npu.sock");
+            let npu_result = std::os::unix::net::UnixStream::connect("/run/lupin/npu.sock")
+                .or_else(|_| std::os::unix::net::UnixStream::connect("/tmp/lupin/npu.sock"));
             match npu_result {
                 Ok(mut stream_npu) => {
                     let _ = stream_npu.write_all(body.as_bytes());
@@ -456,30 +461,8 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
                                     let resp_body = "{}";
                                     let response = format!("HTTP/1.1 502 BAD GATEWAY\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_body.len(), resp_body);
                                     let _ = stream.write_all(response.as_bytes());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_health_endpoint() {
-        let body = "{\"status\":\"online\",\"npu\":\"hexagon-780\",\"model_loaded\":false,\"mode\":\"simulated\"}";
-        assert!(body.contains("\"status\":\"online\""));
-        assert!(body.contains("\"npu\":\"hexagon-780\""));
-        assert!(body.contains("\"mode\":\"simulated\""));
-    }
-
-    #[test]
-    fn test_metrics_endpoint() {
-        let body = "{\"avg_latency_ms\":15.5,\"tokens_per_sec\":42.7,\"memory_usage_mb\":128.0,\"total_inferences\":0}";
-        assert!(body.contains("\"avg_latency_ms\""));
-        assert!(body.contains("\"tokens_per_sec\""));
-        assert!(body.contains("\"memory_usage_mb\""));
-        assert!(body.contains("\"total_inferences\""));
-    }
-}
+                                }
+                            }
                         }
                         Err(_) => {
                             let resp_body = "{}";
@@ -610,5 +593,36 @@ fn main() {
                 eprintln!("⚠️ [API] Connection error: {:?}", e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_health_endpoint() {
+        let npu_socket_exists = false;
+        let model_loaded = false;
+        let mode = "simulated";
+        let body = format!("{{\"status\":\"online\",\"npu\":\"hexagon-780\",\"npu_socket\":{},\"model_loaded\":{},\"mode\":\"{}\"}}\n", npu_socket_exists, model_loaded, mode);
+        assert!(body.contains("\"status\":\"online\""));
+        assert!(body.contains("\"npu\":\"hexagon-780\""));
+        assert!(body.contains("\"npu_socket\":false"));
+        assert!(body.contains("\"mode\":\"simulated\""));
+    }
+
+    #[test]
+    fn test_metrics_endpoint() {
+        let total = 0;
+        let telem = crate::telemetry::SiliconTelemetry::collect();
+        let body = format!(
+            "{{\"avg_latency_ms\":15.5,\"tokens_per_sec\":42.7,\"memory_usage_mb\":128.0,\"total_inferences\":{},\"telemetry\":{}}}\n",
+            total,
+            telem.to_json().trim()
+        );
+        assert!(body.contains("\"avg_latency_ms\""));
+        assert!(body.contains("\"tokens_per_sec\""));
+        assert!(body.contains("\"memory_usage_mb\""));
+        assert!(body.contains("\"total_inferences\""));
+        assert!(body.contains("\"telemetry\""));
     }
 }
