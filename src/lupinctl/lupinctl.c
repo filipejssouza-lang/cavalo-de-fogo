@@ -33,7 +33,7 @@ void print_usage(void) {
     printf("  lupinctl status [--json]\n");
     printf("  lupinctl power <idle|balanced|burst>\n");
     printf("  lupinctl net <up|down|status>\n");
-    printf("  lupinctl hud <next|prev|status|dim|on>\n");
+    printf("  lupinctl hud <next|prev|status|dim|on|rotate [0|90|180|270]>\n");
     printf("  lupinctl npu <start|stop|status>\n");
     printf("  lupinctl thermal <status>\n");
     printf("  lupinctl peltier <on|off|auto|status>\n");

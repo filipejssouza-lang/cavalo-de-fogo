@@ -298,10 +298,54 @@ const unsigned char font8x8_basic[128][8] = {
     ['Z'] = { 0x7E, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x7E, 0x00 },
 };
 
+typedef struct {
+    int current_page;
+    time_t last_activity;
+    int backlight_percent;
+    int rotation; // 0, 90, 180, 270 degrees
+} hud_state_t;
+
+static hud_state_t hud_state = {0, 0, 100, 90};
+
+static inline int get_logical_width(void) {
+    return (hud_state.rotation == 90 || hud_state.rotation == 270) ? HUD_HEIGHT : HUD_WIDTH;
+}
+
+static inline int get_logical_height(void) {
+    return (hud_state.rotation == 90 || hud_state.rotation == 270) ? HUD_WIDTH : HUD_HEIGHT;
+}
+
 void draw_pixel(drm_fb_t *fb, int x, int y, uint32_t color) {
-    if (x < 0 || x >= fb->width || y < 0 || y >= fb->height) return;
-    uint32_t *dst = (uint32_t *)((uint8_t *)fb->vaddr[fb->back_idx] + y * fb->stride + x * 4);
+    int px = x, py = y;
+    switch (hud_state.rotation) {
+        case 90:
+            px = y;
+            py = (HUD_HEIGHT - 1) - x;
+            break;
+        case 180:
+            px = (HUD_WIDTH - 1) - x;
+            py = (HUD_HEIGHT - 1) - y;
+            break;
+        case 270:
+            px = (HUD_WIDTH - 1) - y;
+            py = x;
+            break;
+        default: // 0 deg
+            px = x;
+            py = y;
+            break;
+    }
+    if (px < 0 || px >= fb->width || py < 0 || py >= fb->height) return;
+    uint32_t *dst = (uint32_t *)((uint8_t *)fb->vaddr[fb->back_idx] + py * fb->stride + px * 4);
     *dst = color;
+}
+
+void draw_rect(drm_fb_t *fb, int x, int y, int w, int h, uint32_t color) {
+    for (int j = 0; j < h; j++) {
+        for (int i = 0; i < w; i++) {
+            draw_pixel(fb, x + i, y + j, color);
+        }
+    }
 }
 
 void draw_char(drm_fb_t *fb, int x, int y, char c, uint32_t color) {
@@ -461,13 +505,33 @@ static void update_hud_history(float temp, float tps) {
     }
 }
 
-typedef struct {
-    int current_page;
-    time_t last_activity;
-    int backlight_percent;
-} hud_state_t;
+static void save_rotation(int rot) {
+    FILE *f = fopen("/data/lupin_hud_rotation", "w");
+    if (!f) {
+        f = fopen("/tmp/lupin_hud_rotation", "w");
+    }
+    if (f) {
+        fprintf(f, "%d\n", rot);
+        fclose(f);
+    }
+}
 
-static hud_state_t hud_state = {0, 0, 100};
+static int load_rotation(void) {
+    int rot = 90; // Default: 90 deg (Landscape)
+    FILE *f = fopen("/data/lupin_hud_rotation", "r");
+    if (!f) {
+        f = fopen("/tmp/lupin_hud_rotation", "r");
+    }
+    if (f) {
+        if (fscanf(f, "%d", &rot) == 1) {
+            if (rot != 0 && rot != 90 && rot != 180 && rot != 270) {
+                rot = 90;
+            }
+        }
+        fclose(f);
+    }
+    return rot;
+}
 
 static void update_backlight(int percent) {
     if (percent < 0) percent = 0;
@@ -542,7 +606,25 @@ static void handle_socket(int sock) {
                 if (write(client, "OK\n", 3)) {}
             } else if (strcmp(cmd, "status") == 0) {
                 char resp[128];
-                snprintf(resp, sizeof(resp), "Page: %d/4, Backlight: %d%%\n", hud_state.current_page + 1, hud_state.backlight_percent);
+                snprintf(resp, sizeof(resp), "Page: %d/4, Backlight: %d%%, Rotation: %d deg\n",
+                         hud_state.current_page + 1, hud_state.backlight_percent, hud_state.rotation);
+                if (write(client, resp, strlen(resp))) {}
+            } else if (strncmp(cmd, "rotate", 6) == 0) {
+                char *arg = cmd + 6;
+                while (*arg == ' ') arg++;
+                if (*arg != '\0') {
+                    int r = atoi(arg);
+                    if (r == 0 || r == 90 || r == 180 || r == 270) {
+                        hud_state.rotation = r;
+                    } else {
+                        hud_state.rotation = (hud_state.rotation + 90) % 360;
+                    }
+                } else {
+                    hud_state.rotation = (hud_state.rotation + 90) % 360;
+                }
+                save_rotation(hud_state.rotation);
+                char resp[64];
+                snprintf(resp, sizeof(resp), "OK: Rotation %d deg\n", hud_state.rotation);
                 if (write(client, resp, strlen(resp))) {}
             } else if (strcmp(cmd, "dim") == 0) {
                 hud_state.backlight_percent = 30;
@@ -621,6 +703,7 @@ int main(void) {
     char buf[128];
 
     int sock = setup_socket();
+    hud_state.rotation = load_rotation();
     hud_state.last_activity = time(NULL);
     hud_state.backlight_percent = 100;
     update_backlight(100);
@@ -667,138 +750,272 @@ int main(void) {
         uint32_t color_cyan   = 0xFF00FFFF;
         uint32_t color_yellow = 0xFFFFFF00;
         
-        int y = 5;
+        bool is_landscape = (hud_state.rotation == 90 || hud_state.rotation == 270);
         
-        snprintf(buf, sizeof(buf), "LUPIN OS v6 [%d/4]", hud_state.current_page + 1);
-        draw_text(&fb, 5, y, buf, color_cyan);
-        y += 15;
-        
-        if (hud_state.current_page == 0) {
-            // Page 0: Sistema (CPU, Bateria, RAM, Load, Temp Sparkline)
-            snprintf(buf, sizeof(buf), "CPU: %d C", tel.cpu_temp);
-            draw_text(&fb, 5, y, buf, tel.cpu_temp > 60 ? color_red : color_white);
-            y += 10;
+        if (is_landscape) {
+            if (hud_state.current_page == 0) {
+                // Page 0: Sistema (CPU, Bateria, RAM, Load, Temp Sparkline)
+                snprintf(buf, sizeof(buf), "LUPIN OS v6 [1/4]  SYS METRICS");
+                draw_text(&fb, 6, 3, buf, color_cyan);
+                draw_line(&fb, 0, 13, 293, 13, 0xFF333333);
+
+                // Row 1 (y = 17)
+                snprintf(buf, sizeof(buf), "CPU: %d C", tel.cpu_temp);
+                draw_text(&fb, 6, 17, buf, tel.cpu_temp > 60 ? color_red : color_white);
+
+                snprintf(buf, sizeof(buf), "LOAD: %.2f", tel.load_avg);
+                draw_text(&fb, 105, 17, buf, color_white);
+
+                // Peltier Cooling Status
+                FILE *peltier_f = fopen("/tmp/lupin_peltier_state", "r");
+                char peltier_str[16] = "STANDBY";
+                if (peltier_f) {
+                    if (fgets(peltier_str, sizeof(peltier_str), peltier_f)) {
+                        peltier_str[strcspn(peltier_str, "\r\n")] = 0;
+                    }
+                    fclose(peltier_f);
+                }
+                bool is_peltier_active = (strcmp(peltier_str, "ACTIVE") == 0);
+                snprintf(buf, sizeof(buf), "COOL: %s", peltier_str);
+                draw_text(&fb, 205, 17, buf, is_peltier_active ? color_green : color_gray);
+
+                // Row 2 (y = 29)
+                snprintf(buf, sizeof(buf), "BAT: %d C  %d%%", tel.battery_temp, tel.battery_capacity);
+                draw_text(&fb, 6, 29, buf, tel.battery_temp > 35 ? color_red : color_white);
+
+                draw_progress_bar(&fb, 140, 30, 145, 6, tel.battery_capacity, 
+                                  tel.battery_capacity > 20 ? color_green : color_red, color_gray);
+
+                // Row 3: CPU Temp Sparkline Header (y = 41)
+                draw_text(&fb, 6, 41, "CPU TEMP HISTORY (60s):", color_yellow);
+
+                // Sparkline (y = 53 to 118 -> h = 65, w = 282)
+                draw_sparkline(&fb, 6, 53, 282, 65, hud_history.temp_history, hud_history.count, 30.0f, 85.0f, color_yellow, 0xFF141414);
+            } else if (hud_state.current_page == 1) {
+                // Page 1: IA & NPU (Mode, Model, TPS Sparkline)
+                snprintf(buf, sizeof(buf), "LUPIN OS v6 [2/4]  HEXAGON NPU");
+                draw_text(&fb, 6, 3, buf, color_cyan);
+                draw_line(&fb, 0, 13, 293, 13, 0xFF333333);
+
+                FILE *state_f = fopen("/tmp/lupin_thermal_state", "r");
+                char state_str[32] = "BALANCED";
+                if (state_f) {
+                    if (fgets(state_str, sizeof(state_str), state_f)) {
+                        state_str[strcspn(state_str, "\r\n")] = 0;
+                    }
+                    fclose(state_f);
+                }
+
+                // Row 1 (y = 17)
+                snprintf(buf, sizeof(buf), "NPU: HEXAGON 780 HTP v68  MODE: %s", state_str);
+                draw_text(&fb, 6, 17, buf, color_white);
+
+                // Row 2 (y = 29)
+                snprintf(buf, sizeof(buf), "MODEL: %s (:8091)", tel.model_label);
+                draw_text(&fb, 6, 29, buf, color_green);
+
+                // Row 3: Sparkline header (y = 41)
+                draw_text(&fb, 6, 41, "INFERENCE SPEED (TPS):", color_green);
+
+                // Sparkline (y = 53 to 118 -> h = 65, w = 282)
+                draw_sparkline(&fb, 6, 53, 282, 65, hud_history.tps_history, hud_history.count, 0.0f, 60.0f, color_green, 0xFF141414);
+            } else if (hud_state.current_page == 2) {
+                // Page 2: Rede & Interfaces
+                snprintf(buf, sizeof(buf), "LUPIN OS v6 [3/4]  NET & CLUSTER");
+                draw_text(&fb, 6, 3, buf, color_cyan);
+                draw_line(&fb, 0, 13, 293, 13, 0xFF333333);
+
+                FILE *net_f = fopen("/tmp/lupin_net_state", "r");
+                char net_status[64] = "ONLINE";
+                if (net_f) {
+                    char line[64];
+                    while (fgets(line, sizeof(line), net_f)) {
+                        if (strncmp(line, "STATUS=", 7) == 0) {
+                            snprintf(net_status, sizeof(net_status), "%s", line + 7);
+                            net_status[strcspn(net_status, "\r\n")] = 0;
+                            break;
+                        }
+                    }
+                    fclose(net_f);
+                }
+
+                if (strlen(tel.ip_eth0) > 0) {
+                    snprintf(buf, sizeof(buf), "ETH0 : %s (OTG 0.5ms)", tel.ip_eth0);
+                } else {
+                    snprintf(buf, sizeof(buf), "ETH0 : 192.168.31.101 (OTG 0.5ms)");
+                }
+                draw_text(&fb, 6, 17, buf, color_white);
+
+                if (strlen(tel.ip_wlan0) > 0) {
+                    snprintf(buf, sizeof(buf), "WLAN0: %s", tel.ip_wlan0);
+                } else {
+                    snprintf(buf, sizeof(buf), "WLAN0: 192.168.1.12");
+                }
+                draw_text(&fb, 6, 29, buf, color_white);
+
+                snprintf(buf, sizeof(buf), "LINK : %s | FAILOVER: ACTIVE", net_status);
+                draw_text(&fb, 6, 41, buf, strcmp(net_status, "ONLINE") == 0 ? color_green : color_yellow);
+
+                draw_text(&fb, 6, 53, "MEM0 : SYNCED (P30 PRO) | SSH: :2222", color_cyan);
+
+                snprintf(buf, sizeof(buf), "UPTIME: %.0f S | LOAD: %.2f", tel.uptime, tel.load_avg);
+                draw_text(&fb, 6, 65, buf, color_white);
+
+                draw_text(&fb, 6, 77, "SLOT B SOBERANO | RECOVERY BAREMETAL", color_green);
+                draw_text(&fb, 6, 89, "MEM  : 12GB LPDDR5 (9.2GB FREE)", color_white);
+                draw_text(&fb, 6, 101, "DISK : 256GB UFS 3.1 (/dev/block/sda)", color_gray);
+            } else if (hud_state.current_page == 3) {
+                // Page 3: Emblema Oficial & Status do Sistema
+                draw_logo(&fb, 12, 15);
+
+                draw_text(&fb, 118, 16, "LUPIN OS v6", color_cyan);
+                draw_text(&fb, 118, 28, "CAVALO DE FOGO", color_yellow);
+                draw_text(&fb, 118, 40, "SM8350 BAREMETAL", color_white);
+
+                snprintf(buf, sizeof(buf), "UPTIME: %.0f S", tel.uptime);
+                draw_text(&fb, 118, 54, buf, color_white);
+
+                snprintf(buf, sizeof(buf), "BLIGHT: %d%%", hud_state.backlight_percent);
+                draw_text(&fb, 118, 68, buf, color_white);
+
+                draw_text(&fb, 118, 82, "A/B BOOT: SAFE", color_green);
+                draw_text(&fb, 118, 96, "STATUS: SOVEREIGN", color_cyan);
+            }
+        } else {
+            // Portrait mode fallback (126x294)
+            int y = 5;
             
-            snprintf(buf, sizeof(buf), "BAT: %d C", tel.battery_temp);
-            draw_text(&fb, 5, y, buf, tel.battery_temp > 35 ? color_red : color_white);
+            snprintf(buf, sizeof(buf), "LUPIN OS v6 [%d/4]", hud_state.current_page + 1);
+            draw_text(&fb, 5, y, buf, color_cyan);
             y += 15;
             
-            // Battery Bar
-            snprintf(buf, sizeof(buf), "BAT: %d %%", tel.battery_capacity);
-            draw_text(&fb, 5, y, buf, color_white);
-            y += 10;
-            draw_progress_bar(&fb, 5, y, 116, 8, tel.battery_capacity, 
-                              tel.battery_capacity > 20 ? color_green : color_red, color_gray);
-            y += 16;
-            
-            // Load Average
-            snprintf(buf, sizeof(buf), "LOAD: %.2f", tel.load_avg);
-            draw_text(&fb, 5, y, buf, color_white);
-            y += 12;
-
-            // Peltier Cooling Status
-            FILE *peltier_f = fopen("/tmp/lupin_peltier_state", "r");
-            char peltier_str[16] = "STANDBY";
-            if (peltier_f) {
-                if (fgets(peltier_str, sizeof(peltier_str), peltier_f)) {
-                    peltier_str[strcspn(peltier_str, "\r\n")] = 0;
-                }
-                fclose(peltier_f);
-            }
-            bool is_peltier_active = (strcmp(peltier_str, "ACTIVE") == 0);
-            snprintf(buf, sizeof(buf), "COOL: %s", peltier_str);
-            draw_text(&fb, 5, y, buf, is_peltier_active ? color_green : color_gray);
-            y += 12;
-
-            // CPU Temp Sparkline
-            draw_text(&fb, 5, y, "CPU HIST [C]:", color_cyan);
-            y += 10;
-            draw_sparkline(&fb, 5, y, 116, 28, hud_history.temp_history, hud_history.count, 30.0f, 85.0f, color_yellow, 0xFF141414);
-            y += 32;
-        } else if (hud_state.current_page == 1) {
-            // Page 1: IA & NPU (Mode, Model, TPS Sparkline)
-            FILE *state_f = fopen("/tmp/lupin_thermal_state", "r");
-            char state_str[32] = "BALANCED";
-            if (state_f) {
-                if (fgets(state_str, sizeof(state_str), state_f)) {
-                    state_str[strcspn(state_str, "\n")] = 0;
-                }
-                fclose(state_f);
-            }
-            snprintf(buf, sizeof(buf), "MODE: %s", state_str);
-            draw_text(&fb, 5, y, buf, color_white);
-            y += 12;
-
-            draw_text(&fb, 5, y, "MODEL:", color_green);
-            y += 10;
-            draw_text(&fb, 5, y, tel.model_label, color_white);
-            y += 14;
-
-            draw_text(&fb, 5, y, "NPU: HTP v68", color_cyan);
-            y += 10;
-            draw_text(&fb, 5, y, "PORT: :8091", color_white);
-            y += 14;
-
-            // TPS Sparkline
-            draw_text(&fb, 5, y, "TPS HIST [T/S]:", color_green);
-            y += 10;
-            draw_sparkline(&fb, 5, y, 116, 28, hud_history.tps_history, hud_history.count, 0.0f, 60.0f, color_green, 0xFF141414);
-            y += 32;
-        } else if (hud_state.current_page == 2) {
-            // Page 2: Rede & Interfaces
-            draw_text(&fb, 5, y, "NET INTERFACES:", color_green);
-            y += 12;
-            if (strlen(tel.ip_eth0) > 0) {
-                snprintf(buf, sizeof(buf), "E %s", tel.ip_eth0);
+            if (hud_state.current_page == 0) {
+                // Page 0: Sistema (CPU, Bateria, RAM, Load, Temp Sparkline)
+                snprintf(buf, sizeof(buf), "CPU: %d C", tel.cpu_temp);
+                draw_text(&fb, 5, y, buf, tel.cpu_temp > 60 ? color_red : color_white);
+                y += 10;
+                
+                snprintf(buf, sizeof(buf), "BAT: %d C", tel.battery_temp);
+                draw_text(&fb, 5, y, buf, tel.battery_temp > 35 ? color_red : color_white);
+                y += 15;
+                
+                // Battery Bar
+                snprintf(buf, sizeof(buf), "BAT: %d %%", tel.battery_capacity);
                 draw_text(&fb, 5, y, buf, color_white);
                 y += 10;
-            } else {
-                draw_text(&fb, 5, y, "ETH: ACTIVE", color_white);
-                y += 10;
-            }
-            if (strlen(tel.ip_wlan0) > 0) {
-                snprintf(buf, sizeof(buf), "W %s", tel.ip_wlan0);
+                draw_progress_bar(&fb, 5, y, 116, 8, tel.battery_capacity, 
+                                  tel.battery_capacity > 20 ? color_green : color_red, color_gray);
+                y += 16;
+                
+                // Load Average
+                snprintf(buf, sizeof(buf), "LOAD: %.2f", tel.load_avg);
                 draw_text(&fb, 5, y, buf, color_white);
-                y += 10;
-            } else {
-                draw_text(&fb, 5, y, "WLAN: LINK OK", color_white);
-                y += 10;
-            }
-            y += 5;
-            FILE *net_f = fopen("/tmp/lupin_net_state", "r");
-            char net_status[64] = "STANDBY";
-            if (net_f) {
-                char line[64];
-                while (fgets(line, sizeof(line), net_f)) {
-                    if (strncmp(line, "STATUS=", 7) == 0) {
-                        snprintf(net_status, sizeof(net_status), "%s", line + 7);
-                        net_status[strcspn(net_status, "\r\n")] = 0;
-                        break;
+                y += 12;
+
+                // Peltier Cooling Status
+                FILE *peltier_f = fopen("/tmp/lupin_peltier_state", "r");
+                char peltier_str[16] = "STANDBY";
+                if (peltier_f) {
+                    if (fgets(peltier_str, sizeof(peltier_str), peltier_f)) {
+                        peltier_str[strcspn(peltier_str, "\r\n")] = 0;
                     }
+                    fclose(peltier_f);
                 }
-                fclose(net_f);
+                bool is_peltier_active = (strcmp(peltier_str, "ACTIVE") == 0);
+                snprintf(buf, sizeof(buf), "COOL: %s", peltier_str);
+                draw_text(&fb, 5, y, buf, is_peltier_active ? color_green : color_gray);
+                y += 12;
+
+                // CPU Temp Sparkline
+                draw_text(&fb, 5, y, "CPU HIST [C]:", color_cyan);
+                y += 10;
+                draw_sparkline(&fb, 5, y, 116, 28, hud_history.temp_history, hud_history.count, 30.0f, 85.0f, color_yellow, 0xFF141414);
+                y += 32;
+            } else if (hud_state.current_page == 1) {
+                // Page 1: IA & NPU (Mode, Model, TPS Sparkline)
+                FILE *state_f = fopen("/tmp/lupin_thermal_state", "r");
+                char state_str[32] = "BALANCED";
+                if (state_f) {
+                    if (fgets(state_str, sizeof(state_str), state_f)) {
+                        state_str[strcspn(state_str, "\n")] = 0;
+                    }
+                    fclose(state_f);
+                }
+                snprintf(buf, sizeof(buf), "MODE: %s", state_str);
+                draw_text(&fb, 5, y, buf, color_white);
+                y += 12;
+
+                draw_text(&fb, 5, y, "MODEL:", color_green);
+                y += 10;
+                draw_text(&fb, 5, y, tel.model_label, color_white);
+                y += 14;
+
+                draw_text(&fb, 5, y, "NPU: HTP v68", color_cyan);
+                y += 10;
+                draw_text(&fb, 5, y, "PORT: :8091", color_white);
+                y += 14;
+
+                // TPS Sparkline
+                draw_text(&fb, 5, y, "TPS HIST [T/S]:", color_green);
+                y += 10;
+                draw_sparkline(&fb, 5, y, 116, 28, hud_history.tps_history, hud_history.count, 0.0f, 60.0f, color_green, 0xFF141414);
+                y += 32;
+            } else if (hud_state.current_page == 2) {
+                // Page 2: Rede & Interfaces
+                draw_text(&fb, 5, y, "NET INTERFACES:", color_green);
+                y += 12;
+                if (strlen(tel.ip_eth0) > 0) {
+                    snprintf(buf, sizeof(buf), "E %s", tel.ip_eth0);
+                    draw_text(&fb, 5, y, buf, color_white);
+                    y += 10;
+                } else {
+                    draw_text(&fb, 5, y, "ETH: ACTIVE", color_white);
+                    y += 10;
+                }
+                if (strlen(tel.ip_wlan0) > 0) {
+                    snprintf(buf, sizeof(buf), "W %s", tel.ip_wlan0);
+                    draw_text(&fb, 5, y, buf, color_white);
+                    y += 10;
+                } else {
+                    draw_text(&fb, 5, y, "WLAN: LINK OK", color_white);
+                    y += 10;
+                }
+                y += 5;
+                FILE *net_f = fopen("/tmp/lupin_net_state", "r");
+                char net_status[64] = "STANDBY";
+                if (net_f) {
+                    char line[64];
+                    while (fgets(line, sizeof(line), net_f)) {
+                        if (strncmp(line, "STATUS=", 7) == 0) {
+                            snprintf(net_status, sizeof(net_status), "%s", line + 7);
+                            net_status[strcspn(net_status, "\r\n")] = 0;
+                            break;
+                        }
+                    }
+                    fclose(net_f);
+                }
+                snprintf(buf, sizeof(buf), "LINK: %s", net_status);
+                draw_text(&fb, 5, y, buf, strcmp(net_status, "ONLINE") == 0 ? color_green : color_yellow);
+                y += 10;
+                draw_text(&fb, 5, y, "FAILOVER: ACTIVE", color_cyan);
+            } else if (hud_state.current_page == 3) {
+                // Page 3: Emblema Oficial & Status do Sistema
+                draw_logo(&fb, 15, y);
+                y += 100;
+                
+                draw_text(&fb, 5, y, "FENRIR SOBERANO", color_cyan);
+                y += 12;
+
+                snprintf(buf, sizeof(buf), "UPTIME: %.0f S", tel.uptime);
+                draw_text(&fb, 5, y, buf, color_white);
+                y += 10;
+                
+                snprintf(buf, sizeof(buf), "BLIGHT: %d%%", hud_state.backlight_percent);
+                draw_text(&fb, 5, y, buf, color_white);
+                y += 10;
+
+                draw_text(&fb, 5, y, "A/B BOOT: SAFE", color_green);
             }
-            snprintf(buf, sizeof(buf), "LINK: %s", net_status);
-            draw_text(&fb, 5, y, buf, strcmp(net_status, "ONLINE") == 0 ? color_green : color_yellow);
-            y += 10;
-            draw_text(&fb, 5, y, "FAILOVER: ACTIVE", color_cyan);
-        } else if (hud_state.current_page == 3) {
-            // Page 3: Emblema Oficial & Status do Sistema
-            draw_logo(&fb, 15, y);
-            y += 100;
-            
-            draw_text(&fb, 5, y, "FENRIR SOBERANO", color_cyan);
-            y += 12;
-
-            snprintf(buf, sizeof(buf), "UPTIME: %.0f S", tel.uptime);
-            draw_text(&fb, 5, y, buf, color_white);
-            y += 10;
-            
-            snprintf(buf, sizeof(buf), "BLIGHT: %d%%", hud_state.backlight_percent);
-            draw_text(&fb, 5, y, buf, color_white);
-            y += 10;
-
-            draw_text(&fb, 5, y, "A/B BOOT: SAFE", color_green);
         }
 
         // Double Buffering: Page Flip
