@@ -51,3 +51,58 @@ export ADSP_LIBRARY_PATH="/data/alpine/dsp/cdsp;/vendor_real/lib/rfsa/adsp"
 ./bin/llama-cli -m modelo_qnn.gguf -p "Prompt do sistema" -n 64 --device HTP0
 ```
 O consumo elétrico medido na NPU varia entre **2.0W e 3.5W**, operando com calor residual mínimo na caixa Peltier (31°C).
+
+---
+
+## 4. Hardware Verification & Runtime Dispatch Script
+
+Para verificar a disponibilidade da NPU e a correta configuração do ambiente em chroot, utilizamos o script `tools/test_npu_htp.sh`.
+
+### O que o script faz:
+1. **Verifica Nós de Dispositivo:** Checa se `/dev/adsprpc-smd` e `/dev/msm_fastrpc-2` estão presentes.
+2. **Checa o Daemon DSP:** Confirma se o `cdsprpcd` está em execução e tenta iniciá-lo em `/vendor_real/bin/cdsprpcd` caso não esteja.
+3. **Variáveis de Ambiente:** Configura `LD_LIBRARY_PATH` e `ADSP_LIBRARY_PATH` para os diretórios corretos (`/data/alpine/dsp/cdsp` e `/vendor_real/lib64`).
+4. **Executa o Runner:** Roda a ferramenta nativa `src/npu/qnn_hexagon_runner` para testes de IPC, alocação de buffer e benchmark de latência.
+
+---
+
+## 5. QNN Hexagon Runner (`src/npu/qnn_hexagon_runner.cpp`)
+
+Este é um utilitário C++17 de alta performance para validação da interface FastRPC.
+
+### Funcionalidades:
+- **Carregamento Dinâmico:** Resolve os símbolos do Qualcomm DSP (`remote_handle_open`, `rpcmem_alloc`, etc.) usando `dlopen` na `libcdsprpc.so`.
+- **Zero-Copy Memory:** Aloca memória DMA-BUF/ION usando `rpcmem_alloc` para compartilhamento de tensores entre CPU e HTP com zero cópias.
+- **Benchmark:** Mede o tempo de resposta do IPC, visando latências inferiores a 50 microssegundos.
+
+### Compilação:
+```bash
+make -C src/npu
+```
+
+### Execução:
+```bash
+./src/npu/qnn_hexagon_runner --test-ipc --alloc-buffer 4096 --benchmark
+```
+
+---
+
+## 6. Turnip Vulkan 1.3 UMA Allocator (`src/vulkan/uma_allocator.cpp`)
+
+Módulo em C++ desenhado para a arquitetura UMA (Unified Memory Architecture) da Adreno 660, rodando nativamente no Linux via Mesa Turnip (Vulkan 1.3).
+
+- Utiliza os drivers `/dev/kgsl-3d0` sob o capô (via Turnip).
+- Aloca memórias com as flags `HOST_VISIBLE` e `DEVICE_LOCAL` para compartilhar KV-cache de LLMs entre CPU e GPU.
+- Evita fragmentação da memória KGSL, vital para cargas massivas de IA.
+
+### Compilação e Teste:
+```bash
+make -C src/vulkan
+./src/vulkan/bench_turnip_uma
+```
+
+---
+
+## 7. Integração CI/CD
+
+O pipeline do GitHub Actions (`.github/workflows/build-qnn-llama.yml`) foi atualizado para compilar automaticamente o `llama.cpp` utilizando a Android NDK e o backend QNN.
