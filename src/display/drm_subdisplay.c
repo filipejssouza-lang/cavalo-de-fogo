@@ -217,6 +217,28 @@ bool drm_init(drm_fb_t *fb) {
         }
     }
 
+    /* Desliga a tela frontal 2K 120Hz (CRTC 138 / panel0) para poupar energia e carregar frio */
+    struct drm_mode_crtc off_crtc;
+    memset(&off_crtc, 0, sizeof(off_crtc));
+    off_crtc.crtc_id = 138;
+    off_crtc.count_connectors = 0;
+    off_crtc.fb_id = 0;
+    off_crtc.mode_valid = 0;
+    if (ioctl(fb->fd, DRM_IOCTL_MODE_SETCRTC, &off_crtc) == 0) {
+        fprintf(stderr, "[HUD] Tela frontal 2K 120Hz (CRTC 138) DESLIGADA com sucesso!\n");
+    }
+
+    int bl0_fd = open("/sys/class/backlight/panel0-backlight/bl_power", O_WRONLY);
+    if (bl0_fd >= 0) {
+        if (write(bl0_fd, "4", 1)) {} /* FB_BLANK_POWERDOWN */
+        close(bl0_fd);
+    }
+    int bl0_b = open("/sys/class/backlight/panel0-backlight/brightness", O_WRONLY);
+    if (bl0_b >= 0) {
+        if (write(bl0_b, "0", 1)) {}
+        close(bl0_b);
+    }
+
     int bl_fd = open("/sys/class/backlight/panel1-backlight/brightness", O_WRONLY);
     if (bl_fd >= 0) {
         if (write(bl_fd, "255", 3)) {}
