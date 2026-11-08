@@ -260,7 +260,8 @@ SEOF
     fi
 
     # Desativa espera de 30s do SLPI Gyro (NCS) e rotação GPU desnecessária no CamX K1/K1A
-    if ! mountpoint -q "$SANDBOX/vendor/etc/camera/camxoverridesettingsOfPro.txt"; then
+    if ! grep -q "$SANDBOX/vendor/etc/camera/camxoverridesettingsOfPro.txt" /proc/mounts; then
+        rm -f /tmp/camx_ov1.txt /tmp/camx_ov2.txt
         cp -f "$MNT_BASE/vendor/etc/camera/camxoverridesettings.txt" /tmp/camx_ov1.txt
         cp -f "$MNT_BASE/vendor/etc/camera/camxoverridesettingsOfPro.txt" /tmp/camx_ov2.txt
         sed -i 's/enableGPURotation=TRUE/enableGPURotation=FALSE/g' /tmp/camx_ov1.txt /tmp/camx_ov2.txt
@@ -332,7 +333,7 @@ namespace.default.visible = true
 namespace.default.search.paths = /tmp:/vendor/${LIB}:/vendor/${LIB}/hw:/vendor/${LIB}/camera:/odm/${LIB}:/apex/com.android.vndk.v30/${LIB}
 namespace.default.permitted.paths = /tmp:/vendor:/odm:/apex/com.android.vndk.v30:/data:/mnt
 namespace.default.links = system
-namespace.default.link.system.shared_libs = libc.so:libm.so:libdl.so:libdl_android.so:liblog.so:libz.so:libsync.so:libcgrouprc.so:libvndksupport.so:libnativewindow.so:libbinder_ndk.so:libneuralnetworks.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libvulkan.so:libmediandk.so:libandroid_net.so
+namespace.default.link.system.shared_libs = libc.so:libm.so:libdl.so:libdl_android.so:liblog.so:libz.so:libsync.so:libcgrouprc.so:libvndksupport.so:libnativewindow.so:libbinder_ndk.so:libneuralnetworks.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libvulkan.so:libmediandk.so:libandroid_net.so:libion.so
 namespace.system.isolated = false
 namespace.system.visible = true
 namespace.system.search.paths = /apex/com.android.runtime/${LIB}/bionic:/system/${LIB}:/system_ext/${LIB}
@@ -344,7 +345,7 @@ namespace.default.visible = true
 namespace.default.search.paths = /vendor/${LIB}:/vendor/${LIB}/hw:/vendor/${LIB}/camera:/odm/${LIB}:/apex/com.android.vndk.v30/${LIB}
 namespace.default.permitted.paths = /vendor:/odm:/apex/com.android.vndk.v30:/data:/mnt:/tmp
 namespace.default.links = system
-namespace.default.link.system.shared_libs = libc.so:libm.so:libdl.so:libdl_android.so:liblog.so:libz.so:libsync.so:libcgrouprc.so:libvndksupport.so:libnativewindow.so:libbinder_ndk.so:libneuralnetworks.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libvulkan.so:libmediandk.so:libandroid_net.so
+namespace.default.link.system.shared_libs = libc.so:libm.so:libdl.so:libdl_android.so:liblog.so:libz.so:libsync.so:libcgrouprc.so:libvndksupport.so:libnativewindow.so:libbinder_ndk.so:libneuralnetworks.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libvulkan.so:libmediandk.so:libandroid_net.so:libion.so
 namespace.system.isolated = false
 namespace.system.visible = true
 namespace.system.search.paths = /apex/com.android.runtime/${LIB}/bionic:/system/${LIB}:/system_ext/${LIB}
@@ -356,7 +357,7 @@ namespace.default.visible = true
 namespace.default.search.paths = /vendor/${LIB}:/vendor/${LIB}/hw:/vendor/${LIB}/camera:/odm/${LIB}:/apex/com.android.vndk.v30/${LIB}
 namespace.default.permitted.paths = /vendor:/odm:/apex/com.android.vndk.v30:/data:/mnt:/tmp
 namespace.default.links = system
-namespace.default.link.system.shared_libs = libc.so:libm.so:libdl.so:libdl_android.so:liblog.so:libz.so:libsync.so:libcgrouprc.so:libvndksupport.so:libnativewindow.so:libbinder_ndk.so:libneuralnetworks.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libvulkan.so:libmediandk.so:libandroid_net.so
+namespace.default.link.system.shared_libs = libc.so:libm.so:libdl.so:libdl_android.so:liblog.so:libz.so:libsync.so:libcgrouprc.so:libvndksupport.so:libnativewindow.so:libbinder_ndk.so:libneuralnetworks.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libvulkan.so:libmediandk.so:libandroid_net.so:libion.so
 namespace.system.isolated = false
 namespace.system.visible = true
 namespace.system.search.paths = /apex/com.android.runtime/${LIB}/bionic:/system/${LIB}:/system_ext/${LIB}
@@ -404,9 +405,9 @@ case "$CMD" in
         if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
             case "$1" in
                 wide|main|gn2)     LENS="0" ;;
-                front|selfie)      LENS="1" ;;
+                tele|5x|periscope) LENS="1" ;;
                 ultra|uw)          LENS="2" ;;
-                tele|5x|periscope) LENS="3" ;;
+                front|selfie)      LENS="3" ;;
                 *)                 LENS="$1" ;;
             esac
             shift
