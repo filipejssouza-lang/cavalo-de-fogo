@@ -167,6 +167,37 @@ pub fn start_uds_server() {
                                     }
                                 }
                                 "metrics" => telem.to_prometheus(),
+                                "audio" => {
+                                    let mut args = vec![];
+                                    for i in 1..parts.len() {
+                                        args.push(parts[i]);
+                                    }
+                                    let bin = if std::path::Path::new("/sbin/lupin-audio").exists() {
+                                        "/sbin/lupin-audio"
+                                    } else if std::path::Path::new("build/lupin-audio").exists() {
+                                        "build/lupin-audio"
+                                    } else {
+                                        ""
+                                    };
+                                    if !bin.is_empty() {
+                                        match std::process::Command::new(bin).args(&args).output() {
+                                            Ok(output) => {
+                                                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                                                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                                                if stdout.is_empty() && stderr.is_empty() {
+                                                    "OK\n".to_string()
+                                                } else if !stdout.is_empty() {
+                                                    stdout
+                                                } else {
+                                                    format!("ERROR: {}\n", stderr)
+                                                }
+                                            }
+                                            Err(e) => format!("ERROR: Failed to run lupin-audio: {}\n", e),
+                                        }
+                                    } else {
+                                        format!("ERROR: lupin-audio binary not found\n")
+                                    }
+                                }
                                 _ => "ERROR: Unknown command\n".to_string(),
                             }
                         };

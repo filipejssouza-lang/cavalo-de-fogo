@@ -105,4 +105,8 @@ gcc -Isrc/guardian src/guardian/net_watchdog.c tests/test_net_watchdog.c -o buil
 ./build/test_net_watchdog
 rm -f build/test_net_watchdog
 
-echo "All tests passed (Compilation OK, Thermal Policy Logic and Net Watchdog Anti-Flap Verified)."
+echo "6. Audio Subsystem Test"
+make build/test_audio
+./build/test_audio
+
+echo "All tests passed (Compilation OK, Thermal Policy Logic, Net Watchdog Anti-Flap, Audio Verified)."
