@@ -174,6 +174,10 @@ pub fn start_uds_server() {
                                     }
                                     let bin = if std::path::Path::new("/sbin/lupin-audio").exists() {
                                         "/sbin/lupin-audio"
+                                    } else if std::path::Path::new("/data/lupin-audio").exists() {
+                                        "/data/lupin-audio"
+                                    } else if std::path::Path::new("/data/lupin/bin/lupin-audio").exists() {
+                                        "/data/lupin/bin/lupin-audio"
                                     } else if std::path::Path::new("build/lupin-audio").exists() {
                                         "build/lupin-audio"
                                     } else {

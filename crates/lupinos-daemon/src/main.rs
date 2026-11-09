@@ -256,7 +256,24 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
             
             let response = format!("HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", status_code, out_msg.len(), out_msg);
             let _ = stream.write_all(response.as_bytes());
-        } else if req.starts_with("POST /audio/play") {
+        } else if req.starts_with("POST /audio/music/theme") {
+            let res = std::os::unix::net::UnixStream::connect("/run/lupin/control.sock")
+                .or_else(|_| std::os::unix::net::UnixStream::connect("/tmp/lupin/control.sock"));
+            
+            let mut status_code = "500 Internal Server Error";
+            let mut out_msg = "Failed to connect to control socket".to_string();
+            
+            if let Ok(mut c_stream) = res {
+                let _ = c_stream.write_all(b"audio music");
+                let mut buf = [0; 512];
+                if let Ok(n) = c_stream.read(&mut buf) {
+                    out_msg = String::from_utf8_lossy(&buf[..n]).to_string();
+                    status_code = "200 OK";
+                }
+            }
+            let response = format!("HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", status_code, out_msg.len(), out_msg);
+            let _ = stream.write_all(response.as_bytes());
+        } else if req.starts_with("POST /audio/music/play") || req.starts_with("POST /audio/play") {
             let mut body = String::new();
             if let Some(pos) = req.find("\r\n\r\n") {
                 body = req[pos + 4..].trim().to_string();

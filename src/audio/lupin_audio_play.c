@@ -1,4 +1,5 @@
 #include "lupin_audio.h"
+#include "lupin_music.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,7 @@ void print_usage(void) {
     printf("Usage:\n");
     printf("  lupin-audio beep [freq_hz] [duration_ms]\n");
     printf("  lupin-audio play <filepath.wav>\n");
+    printf("  lupin-audio music\n");
     printf("  lupin-audio vol <0-100>\n");
     printf("  lupin-audio status\n");
 }
@@ -38,7 +40,18 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Missing filepath.\n");
             return 1;
         }
-        return lupin_audio_play_wav(argv[2]);
+        return lupin_music_play_file(argv[2]);
+    } else if (strcmp(argv[1], "music") == 0) {
+        int16_t *buf = NULL;
+        size_t samples = 0;
+        int sample_rate = 48000;
+        if (lupin_music_generate_theme(sample_rate, &buf, &samples) == 0) {
+            // out_samples holds number of stereo samples (2 * frames), size in bytes is * sizeof(int16_t)
+            int ret = lupin_audio_play_pcm(buf, samples * sizeof(int16_t), sample_rate, 2, 16);
+            free(buf);
+            return ret;
+        }
+        return 1;
     } else if (strcmp(argv[1], "vol") == 0) {
         if (argc < 3) {
             fprintf(stderr, "Missing volume (0-100).\n");
