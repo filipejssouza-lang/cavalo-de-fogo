@@ -221,6 +221,88 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
                 body
             );
             let _ = stream.write_all(response.as_bytes());
+        } else if req.starts_with("POST /audio/beep") {
+            let mut body = String::new();
+            if let Some(pos) = req.find("\r\n\r\n") {
+                body = req[pos + 4..].trim().to_string();
+            }
+            let res = std::os::unix::net::UnixStream::connect("/run/lupin/control.sock")
+                .or_else(|_| std::os::unix::net::UnixStream::connect("/tmp/lupin/control.sock"));
+            
+            let mut status_code = "500 Internal Server Error";
+            let mut out_msg = "Failed to connect to control socket".to_string();
+            
+            if let Ok(mut c_stream) = res {
+                // Parse JSON very simply without serde (to keep dependencies low if possible)
+                // "{"freq": 440, "duration_ms": 250}"
+                let freq = if let Some(pos) = body.find("\"freq\":") {
+                    let end = body[pos+7..].find(',').unwrap_or(body[pos+7..].find('}').unwrap_or(body.len() - pos - 7));
+                    body[pos+7..pos+7+end].trim().to_string()
+                } else { "440".to_string() };
+                
+                let dur = if let Some(pos) = body.find("\"duration_ms\":") {
+                    let end = body[pos+14..].find(',').unwrap_or(body[pos+14..].find('}').unwrap_or(body.len() - pos - 14));
+                    body[pos+14..pos+14+end].trim().to_string()
+                } else { "250".to_string() };
+
+                let cmd = format!("audio beep {} {}", freq, dur);
+                let _ = c_stream.write_all(cmd.as_bytes());
+                let mut buf = [0; 512];
+                if let Ok(n) = c_stream.read(&mut buf) {
+                    out_msg = String::from_utf8_lossy(&buf[..n]).to_string();
+                    status_code = "200 OK";
+                }
+            }
+            
+            let response = format!("HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", status_code, out_msg.len(), out_msg);
+            let _ = stream.write_all(response.as_bytes());
+        } else if req.starts_with("POST /audio/play") {
+            let mut body = String::new();
+            if let Some(pos) = req.find("\r\n\r\n") {
+                body = req[pos + 4..].trim().to_string();
+            }
+            let res = std::os::unix::net::UnixStream::connect("/run/lupin/control.sock")
+                .or_else(|_| std::os::unix::net::UnixStream::connect("/tmp/lupin/control.sock"));
+            
+            let mut status_code = "500 Internal Server Error";
+            let mut out_msg = "Failed to connect to control socket".to_string();
+            
+            if let Ok(mut c_stream) = res {
+                let file = if let Some(pos) = body.find("\"file\":") {
+                    let start = body[pos+7..].find('"').unwrap_or(0) + 1;
+                    let end = body[pos+7+start..].find('"').unwrap_or(body.len() - pos - 7 - start);
+                    body[pos+7+start..pos+7+start+end].to_string()
+                } else { "".to_string() };
+
+                let cmd = format!("audio play {}", file);
+                let _ = c_stream.write_all(cmd.as_bytes());
+                let mut buf = [0; 512];
+                if let Ok(n) = c_stream.read(&mut buf) {
+                    out_msg = String::from_utf8_lossy(&buf[..n]).to_string();
+                    status_code = "200 OK";
+                }
+            }
+            
+            let response = format!("HTTP/1.1 {}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", status_code, out_msg.len(), out_msg);
+            let _ = stream.write_all(response.as_bytes());
+        } else if req.starts_with("GET /audio/status") {
+            let res = std::os::unix::net::UnixStream::connect("/run/lupin/control.sock")
+                .or_else(|_| std::os::unix::net::UnixStream::connect("/tmp/lupin/control.sock"));
+            
+            let mut status_code = "500 Internal Server Error";
+            let mut out_msg = "Failed to connect to control socket".to_string();
+            
+            if let Ok(mut c_stream) = res {
+                let _ = c_stream.write_all(b"audio status");
+                let mut buf = [0; 1024];
+                if let Ok(n) = c_stream.read(&mut buf) {
+                    out_msg = String::from_utf8_lossy(&buf[..n]).to_string();
+                    status_code = "200 OK";
+                }
+            }
+            
+            let response = format!("HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", status_code, out_msg.len(), out_msg);
+            let _ = stream.write_all(response.as_bytes());
         } else if req.starts_with("POST /infer/gpu") || req.starts_with("POST /infer/vulkan") {
             if let Some(ref gpu) = state.vulkan {
                 state.is_inferring.store(true, Ordering::SeqCst);
