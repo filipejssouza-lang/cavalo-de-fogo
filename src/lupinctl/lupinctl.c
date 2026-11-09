@@ -38,7 +38,7 @@ void print_usage(void) {
     printf("  lupinctl thermal <status>\n");
     printf("  lupinctl peltier <on|off|auto|status>\n");
     printf("  lupinctl lora <load|list|unload> [args...]\n");
-    printf("  lupinctl audio <play|beep|vol|status> [args...]\n");
+    printf("  lupinctl audio <play|beep|vol|status|music> [args...]\n");
 }
 
 int send_command(const char *cmd) {

@@ -22,7 +22,7 @@ OBJ_NPU = $(SRC_NPU:.c=.o)
 OBJ_GUARDIAN = $(SRC_GUARDIAN:.c=.o)
 OBJ_BENCH = $(SRC_BENCH:.c=.o)
 
-TARGETS = build/lupinos_guard build/bench_extreme build/drm_subdisplay build/lupin-power build/lupinctl build/lupin_slot_ctl build/lupin_lp_query build/lupin-audio
+TARGETS = build/lupinos_guard build/bench_extreme build/drm_subdisplay build/lupin-power build/lupinctl build/lupin_slot_ctl build/lupin_lp_query build/lupin-audio build/test_music
 
 all: $(TARGETS)
 
@@ -70,11 +70,15 @@ build/lupin_lp_query: tools/lupin_lp_query.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
 
-build/lupin-audio: src/audio/lupin_audio_play.c src/audio/lupin_audio.c
+build/lupin-audio: src/audio/lupin_audio_play.c src/audio/lupin_audio.c src/audio/lupin_music.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 build/test_audio: tests/test_audio.c src/audio/lupin_audio.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) -Isrc/audio $^ -o $@ $(LDFLAGS)
+
+build/test_music: tests/test_music.c src/audio/lupin_music.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Isrc/audio $^ -o $@ $(LDFLAGS)
 
