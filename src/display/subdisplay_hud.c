@@ -155,7 +155,7 @@ bool drm_init(drm_fb_t *fb) {
         fb->fb_id = add_cmd.fb_id;
     }
 
-    // Bind CRTC 208 to Connector 64 with 126x294 mode
+    // Bind CRTC 199 to Connector 64 with 126x294 mode
     struct drm_mode_get_connector conn;
     memset(&conn, 0, sizeof(conn));
     conn.connector_id = 64;
@@ -164,17 +164,32 @@ bool drm_init(drm_fb_t *fb) {
     conn.modes_ptr = (uint64_t)&mode;
     conn.count_modes = 1;
     if (ioctl(fb->fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn) >= 0) {
+        if (mode.clock == 0) {
+            mode.clock = 3697;
+            mode.hdisplay = 126;
+            mode.hsync_start = 142;
+            mode.hsync_end = 150;
+            mode.htotal = 158;
+            mode.vdisplay = 294;
+            mode.vsync_start = 326;
+            mode.vsync_end = 358;
+            mode.vtotal = 390;
+            mode.vrefresh = 60;
+            mode.flags = 0x40000000;
+            mode.type = 0x8;
+            strncpy(mode.name, "126x294x60x3697cmd", sizeof(mode.name) - 1);
+        }
         uint32_t conn_id = 64;
         struct drm_mode_crtc set_crtc;
         memset(&set_crtc, 0, sizeof(set_crtc));
         set_crtc.set_connectors_ptr = (uint64_t)&conn_id;
         set_crtc.count_connectors = 1;
-        set_crtc.crtc_id = 208;
+        set_crtc.crtc_id = 199;
         set_crtc.fb_id = fb->fb_id;
         set_crtc.mode_valid = 1;
         set_crtc.mode = mode;
         if (ioctl(fb->fd, DRM_IOCTL_MODE_SETCRTC, &set_crtc) >= 0) {
-            printf("[HUD] Bound CRTC 208 to Connector 64 (126x294 @ %uHz)!\n", mode.vrefresh);
+            printf("[HUD] Bound CRTC 199 to Connector 64 (126x294 @ %uHz)!\n", mode.vrefresh);
         } else {
             fprintf(stderr, "[HUD] Warning: SETCRTC failed (errno: %d)\n", errno);
         }

@@ -20,99 +20,8 @@
 #include <sys/un.h>
 #include <time.h>
 #include <sys/select.h>
-
-// Simple mock DRM ioctls for compilation since we don't have full drm-core headers
-// The actual device has standard Linux DRM ioctls. We declare what we need.
-
-#define DRM_IOCTL_BASE      'd'
-#define DRM_COMMAND_BASE    0x40
-
-struct drm_mode_create_dumb {
-    uint32_t height;
-    uint32_t width;
-    uint32_t bpp;
-    uint32_t flags;
-    uint32_t handle;
-    uint32_t pitch;
-    uint64_t size;
-};
-
-struct drm_mode_map_dumb {
-    uint32_t handle;
-    uint32_t pad;
-    uint64_t offset;
-};
-
-struct drm_mode_destroy_dumb {
-    uint32_t handle;
-};
-
-#define DRM_IOCTL_MODE_CREATE_DUMB _IOWR(DRM_IOCTL_BASE, 0xB2, struct drm_mode_create_dumb)
-#define DRM_IOCTL_MODE_MAP_DUMB    _IOWR(DRM_IOCTL_BASE, 0xB3, struct drm_mode_map_dumb)
-#define DRM_IOCTL_MODE_DESTROY_DUMB _IOWR(DRM_IOCTL_BASE, 0xB4, struct drm_mode_destroy_dumb)
-
-struct drm_mode_crtc_page_flip {
-    uint32_t crtc_id;
-    uint32_t fb_id;
-    uint32_t flags;
-    uint32_t reserved;
-    uint64_t user_data;
-};
-
-#define DRM_IOCTL_MODE_PAGE_FLIP _IOWR(DRM_IOCTL_BASE, 0xB0, struct drm_mode_crtc_page_flip)
-
-// simplified struct for adding fb
-struct drm_mode_fb_cmd {
-    uint32_t fb_id;
-    uint32_t width;
-    uint32_t height;
-    uint32_t pitch;
-    uint32_t bpp;
-    uint32_t depth;
-    uint32_t handle;
-};
-
-#define DRM_IOCTL_MODE_ADDFB       _IOWR(DRM_IOCTL_BASE, 0xAE, struct drm_mode_fb_cmd)
-#define DRM_IOCTL_MODE_RMFB        _IOWR(DRM_IOCTL_BASE, 0xAF, unsigned int)
-
-struct drm_mode_fb_dirty_cmd {
-    uint32_t fb_id;
-    uint32_t flags;
-    uint32_t color;
-    uint32_t num_clips;
-    uint64_t clips_ptr;
-};
-
-#define DRM_IOCTL_MODE_DIRTYFB     _IOWR(DRM_IOCTL_BASE, 0xB1, struct drm_mode_fb_dirty_cmd)
-
-struct drm_mode_modeinfo {
-    uint32_t clock;
-    uint16_t hdisplay, hsync_start, hsync_end, htotal, hskew;
-    uint16_t vdisplay, vsync_start, vsync_end, vtotal, vscan;
-    uint32_t vrefresh, flags, type;
-    char name[32];
-};
-
-struct drm_mode_get_connector {
-    uint64_t encoders_ptr, modes_ptr, props_ptr, prop_values_ptr;
-    uint32_t count_modes, count_props, count_encoders, encoder_id;
-    uint32_t connector_id, connector_type, connector_type_id, connection;
-    uint32_t mm_width, mm_height, subpixel, pad;
-};
-
-struct drm_mode_crtc {
-    uint64_t set_connectors_ptr;
-    uint32_t count_connectors;
-    uint32_t crtc_id;
-    uint32_t fb_id;
-    uint32_t x, y;
-    uint32_t gamma_size;
-    uint32_t mode_valid;
-    struct drm_mode_modeinfo mode;
-};
-
-#define DRM_IOCTL_MODE_GETCONNECTOR _IOWR(DRM_IOCTL_BASE, 0xA7, struct drm_mode_get_connector)
-#define DRM_IOCTL_MODE_SETCRTC     _IOWR(DRM_IOCTL_BASE, 0xA2, struct drm_mode_crtc)
+#include <xf86drm.h>
+#include <xf86drmMode.h>
 
 static volatile bool running = true;
 
@@ -127,7 +36,8 @@ bool drm_init(drm_fb_t *fb) {
     fb->width    = HUD_WIDTH;
     fb->height   = HUD_HEIGHT;
     fb->conn_id  = 64;  /* DSI-2 rear subdisplay connector on Mi 11 Ultra */
-    fb->crtc_id  = 208; /* SDE KMS CRTC bound to DSI-2 */
+    fb->crtc_id  = 199; /* SDE KMS CRTC bound to DSI-2 (126x294 @ 60Hz) */
+    fb->plane_id = 92;  /* Valid SDE Plane for CRTC 199 on Mi 11 Ultra */
     fb->back_idx = 0;
 
     // Open DRM device (card0)
@@ -141,16 +51,32 @@ bool drm_init(drm_fb_t *fb) {
         return true;
     }
 
-    struct drm_mode_modeinfo mode;
+    drmSetClientCap(fb->fd, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1);
+    drmSetClientCap(fb->fd, DRM_CLIENT_CAP_ATOMIC, 1);
+
+    drmModeConnector *conn = drmModeGetConnector(fb->fd, fb->conn_id);
+    drmModeModeInfo mode;
     memset(&mode, 0, sizeof(mode));
-    
-    struct drm_mode_get_connector conn;
-    memset(&conn, 0, sizeof(conn));
-    conn.connector_id = 64;
-    conn.modes_ptr = (uint64_t)&mode;
-    conn.count_modes = 1;
-    ioctl(fb->fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn); // try to get mode
-    
+    if (conn && conn->count_modes > 0) {
+        mode = conn->modes[0];
+        drmModeFreeConnector(conn);
+    } else {
+        mode.clock = 3697;
+        mode.hdisplay = 126;
+        mode.hsync_start = 142;
+        mode.hsync_end = 150;
+        mode.htotal = 158;
+        mode.vdisplay = 294;
+        mode.vsync_start = 326;
+        mode.vsync_end = 358;
+        mode.vtotal = 390;
+        mode.vrefresh = 60;
+        mode.flags = 0x40000000;
+        mode.type = 0x8;
+        strncpy(mode.name, "126x294x60x3697cmd", sizeof(mode.name) - 1);
+    }
+
+    // Allocate dumb buffers (double buffering)
     for (int i = 0; i < 2; i++) {
         struct drm_mode_create_dumb create_arg;
         memset(&create_arg, 0, sizeof(create_arg));
@@ -202,19 +128,84 @@ bool drm_init(drm_fb_t *fb) {
         }
     }
 
-    if (fb->fb_id[0] > 0) {
-        uint32_t conn_id = fb->conn_id;
-        struct drm_mode_crtc set_crtc;
-        memset(&set_crtc, 0, sizeof(set_crtc));
-        set_crtc.set_connectors_ptr = (uint64_t)&conn_id;
-        set_crtc.count_connectors = 1;
-        set_crtc.crtc_id = fb->crtc_id;
-        set_crtc.fb_id = fb->fb_id[0];
-        set_crtc.mode_valid = 1;
-        set_crtc.mode = mode;
-        if (ioctl(fb->fd, DRM_IOCTL_MODE_SETCRTC, &set_crtc) < 0) {
-            fprintf(stderr, "[HUD] Warning: SETCRTC failed (errno: %d). Continuing anyway.\n", errno);
+    // Discover property IDs for Atomic Modeset
+    uint32_t crtc_active_id = 0, crtc_mode_id = 0;
+    drmModeObjectProperties *crtc_props = drmModeObjectGetProperties(fb->fd, fb->crtc_id, DRM_MODE_OBJECT_CRTC);
+    if (crtc_props) {
+        for (int i = 0; i < crtc_props->count_props; i++) {
+            drmModePropertyRes *p = drmModeGetProperty(fb->fd, crtc_props->props[i]);
+            if (p) {
+                if (strcmp(p->name, "ACTIVE") == 0) crtc_active_id = p->prop_id;
+                if (strcmp(p->name, "MODE_ID") == 0) crtc_mode_id = p->prop_id;
+                drmModeFreeProperty(p);
+            }
         }
+        drmModeFreeObjectProperties(crtc_props);
+    }
+
+    uint32_t conn_crtc_id = 0;
+    drmModeObjectProperties *conn_props = drmModeObjectGetProperties(fb->fd, fb->conn_id, DRM_MODE_OBJECT_CONNECTOR);
+    if (conn_props) {
+        for (int i = 0; i < conn_props->count_props; i++) {
+            drmModePropertyRes *p = drmModeGetProperty(fb->fd, conn_props->props[i]);
+            if (p) {
+                if (strcmp(p->name, "CRTC_ID") == 0) conn_crtc_id = p->prop_id;
+                drmModeFreeProperty(p);
+            }
+        }
+        drmModeFreeObjectProperties(conn_props);
+    }
+
+    uint32_t p_crtc_id = 0, p_cx = 0, p_cy = 0, p_cw = 0, p_ch = 0;
+    uint32_t p_sx = 0, p_sy = 0, p_sw = 0, p_sh = 0;
+    drmModeObjectProperties *pl_props = drmModeObjectGetProperties(fb->fd, fb->plane_id, DRM_MODE_OBJECT_PLANE);
+    if (pl_props) {
+        for (int i = 0; i < pl_props->count_props; i++) {
+            drmModePropertyRes *p = drmModeGetProperty(fb->fd, pl_props->props[i]);
+            if (p) {
+                if (strcmp(p->name, "CRTC_ID") == 0) p_crtc_id = p->prop_id;
+                if (strcmp(p->name, "FB_ID") == 0) fb->p_fb_prop_id = p->prop_id;
+                if (strcmp(p->name, "CRTC_X") == 0) p_cx = p->prop_id;
+                if (strcmp(p->name, "CRTC_Y") == 0) p_cy = p->prop_id;
+                if (strcmp(p->name, "CRTC_W") == 0) p_cw = p->prop_id;
+                if (strcmp(p->name, "CRTC_H") == 0) p_ch = p->prop_id;
+                if (strcmp(p->name, "SRC_X") == 0) p_sx = p->prop_id;
+                if (strcmp(p->name, "SRC_Y") == 0) p_sy = p->prop_id;
+                if (strcmp(p->name, "SRC_W") == 0) p_sw = p->prop_id;
+                if (strcmp(p->name, "SRC_H") == 0) p_sh = p->prop_id;
+                drmModeFreeProperty(p);
+            }
+        }
+        drmModeFreeObjectProperties(pl_props);
+    }
+
+    uint32_t blob_id = 0;
+    drmModeCreatePropertyBlob(fb->fd, &mode, sizeof(mode), &blob_id);
+
+    // Initial Atomic Modeset (Plane 92 -> CRTC 199 -> Connector 64)
+    if (fb->fb_id[0] > 0 && fb->p_fb_prop_id > 0) {
+        drmModeAtomicReq *req = drmModeAtomicAlloc();
+        drmModeAtomicAddProperty(req, fb->crtc_id, crtc_active_id, 1);
+        drmModeAtomicAddProperty(req, fb->crtc_id, crtc_mode_id, blob_id);
+        drmModeAtomicAddProperty(req, fb->conn_id, conn_crtc_id, fb->crtc_id);
+        drmModeAtomicAddProperty(req, fb->plane_id, p_crtc_id, fb->crtc_id);
+        drmModeAtomicAddProperty(req, fb->plane_id, fb->p_fb_prop_id, fb->fb_id[0]);
+        drmModeAtomicAddProperty(req, fb->plane_id, p_cx, 0);
+        drmModeAtomicAddProperty(req, fb->plane_id, p_cy, 0);
+        drmModeAtomicAddProperty(req, fb->plane_id, p_cw, fb->width);
+        drmModeAtomicAddProperty(req, fb->plane_id, p_ch, fb->height);
+        drmModeAtomicAddProperty(req, fb->plane_id, p_sx, 0);
+        drmModeAtomicAddProperty(req, fb->plane_id, p_sy, 0);
+        drmModeAtomicAddProperty(req, fb->plane_id, p_sw, fb->width << 16);
+        drmModeAtomicAddProperty(req, fb->plane_id, p_sh, fb->height << 16);
+
+        int ret = drmModeAtomicCommit(fb->fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+        if (ret == 0) {
+            fprintf(stderr, "[HUD] ATOMIC MODESET CRTC 199 + Connector 64 + Plane 92 SUCCESS!\n");
+        } else {
+            fprintf(stderr, "[HUD] Warning: Atomic modeset failed (errno: %d).\n", errno);
+        }
+        drmModeAtomicFree(req);
     }
 
     /* Desliga a tela frontal 2K 120Hz (CRTC 138 / panel0) para poupar energia e carregar frio */
@@ -237,6 +228,12 @@ bool drm_init(drm_fb_t *fb) {
     if (bl0_b >= 0) {
         if (write(bl0_b, "0", 1)) {}
         close(bl0_b);
+    }
+
+    int bl_p_fd = open("/sys/class/backlight/panel1-backlight/bl_power", O_WRONLY);
+    if (bl_p_fd >= 0) {
+        if (write(bl_p_fd, "0", 1)) {}
+        close(bl_p_fd);
     }
 
     int bl_fd = open("/sys/class/backlight/panel1-backlight/brightness", O_WRONLY);
@@ -712,6 +709,13 @@ void gather_telemetry(telemetry_data_t *data) {
 }
 
 int main(void) {
+    FILE *log_fp = fopen("/tmp/lupin_hud.log", "w");
+    if (log_fp) {
+        dup2(fileno(log_fp), STDERR_FILENO);
+        dup2(fileno(log_fp), STDOUT_FILENO);
+        setvbuf(stdout, NULL, _IONBF, 0);
+        setvbuf(stderr, NULL, _IONBF, 0);
+    }
     int lock_fd = open("/tmp/lupin_hud.lock", O_CREAT | O_RDWR, 0644);
     if (lock_fd >= 0) {
         struct flock fl;
@@ -1045,18 +1049,27 @@ int main(void) {
             }
         }
 
-        // Double Buffering: Page Flip
+        // Double Buffering: Atomic Page Flip
         if (fb.fb_id[fb.back_idx] && fb.fd >= 0) {
             struct drm_mode_fb_dirty_cmd dirty;
             memset(&dirty, 0, sizeof(dirty));
             dirty.fb_id = fb.fb_id[fb.back_idx];
             ioctl(fb.fd, DRM_IOCTL_MODE_DIRTYFB, &dirty);
 
-            struct drm_mode_crtc_page_flip flip;
-            memset(&flip, 0, sizeof(flip));
-            flip.crtc_id = fb.crtc_id;
-            flip.fb_id = fb.fb_id[fb.back_idx];
-            ioctl(fb.fd, DRM_IOCTL_MODE_PAGE_FLIP, &flip);
+            if (fb.plane_id > 0 && fb.p_fb_prop_id > 0) {
+                drmModeAtomicReq *req = drmModeAtomicAlloc();
+                if (req) {
+                    drmModeAtomicAddProperty(req, fb.plane_id, fb.p_fb_prop_id, fb.fb_id[fb.back_idx]);
+                    drmModeAtomicCommit(fb.fd, req, DRM_MODE_ATOMIC_NONBLOCK, NULL);
+                    drmModeAtomicFree(req);
+                }
+            } else {
+                struct drm_mode_crtc_page_flip flip;
+                memset(&flip, 0, sizeof(flip));
+                flip.crtc_id = fb.crtc_id;
+                flip.fb_id = fb.fb_id[fb.back_idx];
+                ioctl(fb.fd, DRM_IOCTL_MODE_PAGE_FLIP, &flip);
+            }
 
             fb.back_idx = (fb.back_idx + 1) % 2;
         }

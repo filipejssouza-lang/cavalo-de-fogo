@@ -11,7 +11,7 @@ use std::ptr;
 pub const REAR_WIDTH: usize = 126;
 pub const REAR_HEIGHT: usize = 294;
 const REAR_CONNECTOR_ID: u32 = 64;
-const REAR_CRTC_ID: u32 = 208;
+const REAR_CRTC_ID: u32 = 199;
 
 // Linux DRM ioctl structures (matching `include/uapi/drm/drm_mode.h`)
 #[repr(C)]
@@ -201,6 +201,20 @@ impl RearDisplay {
             };
             unsafe {
                 let _ = libc::ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR.try_into().unwrap(), &mut conn);
+            }
+            if mode.clock == 0 {
+                mode.clock = 3697;
+                mode.hdisplay = 126;
+                mode.hsync_start = 142;
+                mode.hsync_end = 150;
+                mode.htotal = 158;
+                mode.vdisplay = 294;
+                mode.vsync_start = 326;
+                mode.vsync_end = 358;
+                mode.vtotal = 390;
+                mode.vrefresh = 60;
+                mode.flags = 0x40000000;
+                mode.mode_type = 0x8;
             }
 
             let mut ok = true;

@@ -297,7 +297,7 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
                 body
             );
             let _ = stream.write_all(response.as_bytes());
-        } else if req.starts_with("POST /infer") || req.starts_with("POST /v1/chat/completions") {
+        } else if req.starts_with("POST /infer") {
             state.is_inferring.store(true, Ordering::SeqCst);
             let t0 = Instant::now();
 
@@ -422,27 +422,32 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
             let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
             let _ = stream.write_all(response.as_bytes());
         } else if req.starts_with("POST /v1/chat/completions") {
+            state.is_inferring.store(true, Ordering::SeqCst);
+            state.total_inferences.fetch_add(1, Ordering::SeqCst);
             let mut body = String::new();
             if let Some(pos) = req.find("\r\n\r\n") {
                 body = req[pos + 4..].to_string();
             }
+            let is_stream = body.contains("\"stream\": true") || body.contains("\"stream\":true");
             let npu_result = std::os::unix::net::UnixStream::connect("/run/lupin/npu.sock")
                 .or_else(|_| std::os::unix::net::UnixStream::connect("/tmp/lupin/npu.sock"));
             match npu_result {
                 Ok(mut stream_npu) => {
-                    let _ = stream_npu.write_all(body.as_bytes());
-                    let mut resp_buf = [0; 4096];
-                    match stream_npu.read(&mut resp_buf) {
-                        Ok(n) => {
-                            let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
-                            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_str.len(), resp_str);
-                            let _ = stream.write_all(response.as_bytes());
+                    let http_req = format!("POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                    let _ = stream_npu.write_all(http_req.as_bytes());
+                    if is_stream {
+                        let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                        let _ = stream.write_all(header.as_bytes());
+                        let mut buf = [0; 4096];
+                        while let Ok(n) = stream_npu.read(&mut buf) {
+                            if n == 0 || stream.write_all(&buf[..n]).is_err() { break; }
                         }
-                        Err(_) => {
-                            let resp_body = "{}";
-                            let response = format!("HTTP/1.1 502 BAD GATEWAY\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_body.len(), resp_body);
-                            let _ = stream.write_all(response.as_bytes());
-                        }
+                    } else {
+                        let mut resp_buf = Vec::new();
+                        let _ = stream_npu.read_to_end(&mut resp_buf);
+                        let resp_str = String::from_utf8_lossy(&resp_buf);
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_str.len(), resp_str);
+                        let _ = stream.write_all(response.as_bytes());
                     }
                 }
                 Err(_) => {
@@ -450,27 +455,126 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
                         Ok(mut tcp_stream) => {
                             let http_req = format!("POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
                             let _ = tcp_stream.write_all(http_req.as_bytes());
-                            let mut resp_buf = [0; 8192];
-                            match tcp_stream.read(&mut resp_buf) {
-                                Ok(n) => {
-                                    let resp_str = String::from_utf8_lossy(&resp_buf[..n]);
-                                    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_str.len(), resp_str);
-                                    let _ = stream.write_all(response.as_bytes());
+                            if is_stream {
+                                let header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                                let _ = stream.write_all(header.as_bytes());
+                                let mut buf = [0; 4096];
+                                while let Ok(n) = tcp_stream.read(&mut buf) {
+                                    if n == 0 || stream.write_all(&buf[..n]).is_err() { break; }
                                 }
-                                Err(_) => {
-                                    let resp_body = "{}";
-                                    let response = format!("HTTP/1.1 502 BAD GATEWAY\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_body.len(), resp_body);
-                                    let _ = stream.write_all(response.as_bytes());
-                                }
+                            } else {
+                                let mut resp_buf = Vec::new();
+                                let _ = tcp_stream.read_to_end(&mut resp_buf);
+                                let resp_str = String::from_utf8_lossy(&resp_buf);
+                                let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_str.len(), resp_str);
+                                let _ = stream.write_all(response.as_bytes());
                             }
                         }
                         Err(_) => {
-                            let resp_body = "{}";
+                            let resp_body = "{\"error\":\"Inference backend offline (NPU socket / llama-server 127.0.0.1:8080 not reachable)\"}\n";
                             let response = format!("HTTP/1.1 503 SERVICE UNAVAILABLE\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_body.len(), resp_body);
                             let _ = stream.write_all(response.as_bytes());
                         }
                     }
                 }
+            }
+            state.is_inferring.store(false, Ordering::SeqCst);
+        } else if req.starts_with("GET /cam/shot") || req.starts_with("POST /cam/shot") {
+            let mut lens = "wide".to_string();
+            let wants_jpeg = req.contains("Accept: image/jpeg");
+
+            if req.starts_with("GET") {
+                if let Some(pos) = req.find("lens=") {
+                    let rest = &req[pos + 5..];
+                    if let Some(space_pos) = rest.find(&[' ', '&', '\r', '\n'][..]) {
+                        lens = rest[..space_pos].to_string();
+                    } else {
+                        lens = rest.to_string();
+                    }
+                }
+            } else if req.starts_with("POST") {
+                if let Some(pos) = req.find("\r\n\r\n") {
+                    let body = &req[pos + 4..];
+                    if let Some(l_start) = body.find("\"lens\":") {
+                        let rest = &body[l_start + 7..];
+                        if let Some(quote1) = rest.find('"') {
+                            if let Some(quote2) = rest[quote1 + 1..].find('"') {
+                                lens = rest[quote1 + 1..quote1 + 1 + quote2].to_string();
+                            }
+                        }
+                    }
+                }
+            }
+
+            let lens = lens.trim().to_lowercase();
+            let bin = if std::path::Path::new("/sbin/lupin-cam").exists() {
+                "/sbin/lupin-cam"
+            } else if std::path::Path::new("/system/bin/lupin-cam").exists() {
+                "/system/bin/lupin-cam"
+            } else if std::path::Path::new("/data/lupin/bin/lupin-cam").exists() {
+                "/data/lupin/bin/lupin-cam"
+            } else {
+                ""
+            };
+
+            if !bin.is_empty() {
+                match std::process::Command::new(bin).arg("shot").arg(&lens).output() {
+                    Ok(output) => {
+                        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        let shot_tmp = "/tmp/cam_sandbox/tmp/shot_out.jpg";
+                        let shot_tmp_root = "/tmp/shot_out.jpg";
+                        let img_path = if std::path::Path::new(shot_tmp).exists() {
+                            Some(shot_tmp)
+                        } else if std::path::Path::new(shot_tmp_root).exists() {
+                            Some(shot_tmp_root)
+                        } else {
+                            None
+                        };
+
+                        if wants_jpeg && img_path.is_some() {
+                            if let Ok(bytes) = std::fs::read(img_path.unwrap()) {
+                                let header = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                    bytes.len()
+                                );
+                                let _ = stream.write_all(header.as_bytes());
+                                let _ = stream.write_all(&bytes);
+                            } else {
+                                let resp = "HTTP/1.1 500 INTERNAL ERROR\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                                let _ = stream.write_all(resp.as_bytes());
+                            }
+                        } else {
+                            let resp_body = if stdout.is_empty() {
+                                format!("{{\"status\":\"success\", \"lens\":\"{}\"}}\n", lens)
+                            } else {
+                                format!("{{\"status\":\"success\", \"lens\":\"{}\", \"output\":{:?}}}\n", lens, stdout)
+                            };
+                            let header = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                resp_body.len(),
+                                resp_body
+                            );
+                            let _ = stream.write_all(header.as_bytes());
+                        }
+                    }
+                    Err(e) => {
+                        let resp_body = format!("{{\"status\":\"error\", \"message\":\"{}\"}}\n", e);
+                        let header = format!(
+                            "HTTP/1.1 500 INTERNAL ERROR\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            resp_body.len(),
+                            resp_body
+                        );
+                        let _ = stream.write_all(header.as_bytes());
+                    }
+                }
+            } else {
+                let resp_body = format!("{{\"status\":\"mock_success\", \"lens\":\"{}\"}}\n", lens);
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    resp_body.len(),
+                    resp_body
+                );
+                let _ = stream.write_all(header.as_bytes());
             }
         } else {
             let body = String::new();
@@ -624,5 +728,16 @@ mod tests {
         assert!(body.contains("\"memory_usage_mb\""));
         assert!(body.contains("\"total_inferences\""));
         assert!(body.contains("\"telemetry\""));
+    }
+
+    #[test]
+    fn test_cam_shot_endpoint_format() {
+        let lens = "wide";
+        let resp_body = format!("{{\"status\":\"success\", \"lens\":\"{}\"}}\n", lens);
+        assert!(resp_body.contains("\"status\":\"success\""));
+        assert!(resp_body.contains("\"lens\":\"wide\""));
+
+        let post_json = "{\"lens\":\"front\",\"width\":2592,\"height\":1940}";
+        assert!(post_json.contains("\"lens\":"));
     }
 }

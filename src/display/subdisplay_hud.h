@@ -32,6 +32,8 @@ typedef struct {
     uint32_t fb_id[2];
     uint32_t crtc_id;
     uint32_t conn_id;
+    uint32_t plane_id;
+    uint32_t p_fb_prop_id;
     int back_idx;
 } drm_fb_t;
 

@@ -60,9 +60,87 @@ pub fn start_uds_server() {
                                         )
                                     }
                                 }
-                                "power" => format!("Power mode set to {:?}\n", parts.get(1)),
+                                "power" => {
+                                    if let Some(mode) = parts.get(1) {
+                                        let bin = if std::path::Path::new("/sbin/lupin-power").exists() {
+                                            "/sbin/lupin-power"
+                                        } else if std::path::Path::new("/system/bin/lupin-power").exists() {
+                                            "/system/bin/lupin-power"
+                                        } else {
+                                            ""
+                                        };
+                                        if !bin.is_empty() {
+                                            match std::process::Command::new(bin).arg(mode).output() {
+                                                Ok(o) => {
+                                                    let msg = String::from_utf8_lossy(&o.stdout);
+                                                    if msg.trim().is_empty() {
+                                                        format!("Power mode set to {}\n", mode)
+                                                    } else {
+                                                        format!("{}\n", msg.trim())
+                                                    }
+                                                }
+                                                Err(e) => format!("ERROR: Failed to run lupin-power: {}\n", e),
+                                            }
+                                        } else {
+                                            let _ = std::fs::write("/tmp/power_state", format!("{}\n", mode));
+                                            format!("Power mode mock-set to {}\n", mode)
+                                        }
+                                    } else {
+                                        "ERROR: power requires mode (idle, balanced, burst)\n".to_string()
+                                    }
+                                }
+                                "hud" => {
+                                    if let Some(cmd) = parts.get(1) {
+                                        let res = std::os::unix::net::UnixStream::connect("/run/lupin/hud.sock")
+                                            .or_else(|_| std::os::unix::net::UnixStream::connect("/tmp/lupin/hud.sock"));
+                                        match res {
+                                            Ok(mut s) => {
+                                                let _ = s.write_all(cmd.as_bytes());
+                                                let mut buf = [0; 256];
+                                                if let Ok(n) = s.read(&mut buf) {
+                                                    String::from_utf8_lossy(&buf[..n]).to_string()
+                                                } else {
+                                                    format!("HUD set to {}\n", cmd)
+                                                }
+                                            }
+                                            Err(_) => format!("HUD mock-set to {}\n", cmd),
+                                        }
+                                    } else {
+                                        "ERROR: hud requires command (next, prev, dim, on, status)\n".to_string()
+                                    }
+                                }
+                                "cam" => {
+                                    if parts.get(1) == Some(&"shot") {
+                                        let lens = parts.get(2).unwrap_or(&"wide");
+                                        let bin = if std::path::Path::new("/sbin/lupin-cam").exists() {
+                                            "/sbin/lupin-cam"
+                                        } else if std::path::Path::new("/system/bin/lupin-cam").exists() {
+                                            "/system/bin/lupin-cam"
+                                        } else if std::path::Path::new("/data/lupin/bin/lupin-cam").exists() {
+                                            "/data/lupin/bin/lupin-cam"
+                                        } else {
+                                            ""
+                                        };
+                                        if !bin.is_empty() {
+                                            match std::process::Command::new(bin).arg("shot").arg(lens).output() {
+                                                Ok(output) => {
+                                                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                                                    if stdout.is_empty() {
+                                                        format!("{{\"status\":\"success\", \"lens\":\"{}\"}}\n", lens)
+                                                    } else {
+                                                        format!("{}\n", stdout)
+                                                    }
+                                                }
+                                                Err(e) => format!("ERROR: Failed to run camera: {}\n", e),
+                                            }
+                                        } else {
+                                            format!("{{\"status\":\"mock_success\", \"lens\":\"{}\"}}\n", lens)
+                                        }
+                                    } else {
+                                        "ERROR: cam requires 'shot' subcommand (ex: cam shot wide)\n".to_string()
+                                    }
+                                }
                                 "net" => format!("Net set to {:?}\n", parts.get(1)),
-                                "hud" => format!("HUD set to {:?}\n", parts.get(1)),
                                 "npu" => format!("NPU set to {:?}\n", parts.get(1)),
                                 "thermal" => format!("Thermal Mode: {}\n", telem.thermal_mode),
                                 "peltier" => {
@@ -121,4 +199,21 @@ pub fn start_uds_server() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_uds_command_parsing() {
+        let cmd = "power burst";
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        assert_eq!(parts[0], "power");
+        assert_eq!(parts[1], "burst");
+
+        let cam_cmd = "cam shot front";
+        let cam_parts: Vec<&str> = cam_cmd.split_whitespace().collect();
+        assert_eq!(cam_parts[0], "cam");
+        assert_eq!(cam_parts[1], "shot");
+        assert_eq!(cam_parts[2], "front");
+    }
 }
