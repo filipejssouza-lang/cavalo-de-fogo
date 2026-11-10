@@ -74,6 +74,23 @@ circuito; o `Rv32` só simula. O motor C é **host-side**, então siga o `Rv32`
 (linhas ~296-310) para a semântica e use o `Machine` só como referência do *formato*
 do registro no circuito.
 
+### ⚠️ O bignum NÃO é otimização — é essencial
+
+Não aceite a conclusão de que "o escopo RV32IM+Zba atual já é suficiente". Isso está
+**errado**:
+
+- O firmware `calc` do Qwenputer (`experimental/riscv/env/calc/calc.c`) avalia
+  `+ - * / // % ** gcd` **sobre o digit file**, com valores de **até 62 dígitos**
+  (`docs/rv32.md:24-31`).
+- Sem as uops 64-69, o computador **em pesos** não faz aritmética de precisão
+  arbitrária, e o motor C fica **incompleto em relação à spec do `ref.py`**.
+- O `README.md:16` do `experimental/riscv` diz: *"A `calc` firmware with bignum
+  `+ - * / // % ** gcd` is exact on 10,000 random cases."*
+
+Ou seja: o golden test 14/14 hoje prova a paridade **no domínio coberto** (aritmética
+de 32 bits), e o domínio do Qwenputer é **justamente** o de precisão arbitrária. Sem
+as custom ops, a Fase 3 (merge real) entrega um computador que não calcula.
+
 ## Numeração canônica das fases
 
 **F1** motor real ✅ · **F2** Guard+Store+endpoints ✅ · **F2.5** bignum 🟡 ·
