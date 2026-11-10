@@ -846,50 +846,103 @@ mod tests {
         assert!(post_json.contains("\"lens\":"));
     }
 }
-fn handle_pc_run(mut stream: std::net::TcpStream, request_body: &str) {
-    if let Some(start) = request_body.find(r#""code":"#) {
-        let after_code = &request_body[start + 7..]; // after "code":
-        let mut extracted_code = String::new();
-        let mut in_quotes = false;
-        let mut iter = after_code.chars().peekable();
-        while let Some(c) = iter.next() {
-            if c == ' ' || c == '\n' || c == '\r' {
-                if !in_quotes {
-                    continue;
+/// Caminho absoluto do binário do motor Neuro-PC.
+///
+/// Antes isto era "./build/lupin-pc" — um caminho RELATIVO ao CWD do daemon.
+/// No Fenrir o daemon roda a partir de /, então o binário nunca era
+/// encontrado e as rotas /pc/* respondiam vazio. A busca agora é por
+/// candidatos absolutos, em ordem de preferência.
+fn neuro_pc_bin() -> Option<&'static str> {
+    const CANDIDATES: [&str; 4] = [
+        "/usr/local/bin/lupin-pc",
+        "/opt/lupinos/lupin-pc",
+        "/root/cavalo-de-fogo/build/lupin-pc",
+        "/home/filipe/cavalo-de-fogo/build/lupin-pc",
+    ];
+    CANDIDATES.iter().find(|p| std::path::Path::new(p).exists()).copied()
+}
+
+/// Extrai o valor de uma string JSON (campo "code") de um corpo de requisição.
+/// Devolve None se o campo não existir.
+fn json_string_field(body: &str, field: &str) -> Option<String> {
+    let needle = format!("\"{}\":\"", field);
+    let start = body.find(&needle)? + needle.len();
+    let rest = &body[start..];
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => break,
+            '\\' => {
+                //_seqüência de escape: \n \t \" \\ \uXXXX
+                match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some('r') => out.push('\r'),
+                    Some('"') => out.push('"'),
+                    Some('\\') => out.push('\\'),
+                    Some('/') => out.push('/'),
+                    Some('u') => {
+                        let hex: String = chars.by_ref().take(4).collect();
+                        if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                            if let Some(ch) = char::from_u32(n) {
+                                out.push(ch);
+                            }
+                        }
+                    }
+                    Some(other) => out.push(other),
+                    None => break,
                 }
             }
-            if c == '"' {
-                if !in_quotes {
-                    in_quotes = true;
-                    continue;
-                } else {
-                    break;
-                }
-            }
-            if in_quotes {
-                extracted_code.push(c);
-            }
-        }
-        
-        let output = std::process::Command::new("./build/lupin-pc")
-            .arg("run")
-            .arg(&extracted_code)
-            .output();
-        
-        if let Ok(out) = output {
-            let res_str = String::from_utf8_lossy(&out.stdout);
-            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}", res_str);
-            let _ = stream.write_all(response.as_bytes());
-            return;
+            _ => out.push(c),
         }
     }
-    
-    let err_response = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{\"error\": \"invalid code\"}";
-    let _ = stream.write_all(err_response.as_bytes());
+    Some(out)
+}
+
+fn handle_pc_run(mut stream: std::net::TcpStream, request_body: &str) {
+    let Some(code) = json_string_field(request_body, "code") else {
+        let err_response =
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{\"error\": \"missing code\"}";
+        let _ = stream.write_all(err_response.as_bytes());
+        return;
+    };
+
+    let Some(bin) = neuro_pc_bin() else {
+        let err_response = "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n\r\n{\"error\": \"neuro-pc binary not found\"}";
+        let _ = stream.write_all(err_response.as_bytes());
+        return;
+    };
+
+    let output = std::process::Command::new(bin).arg("run").arg(&code).output();
+
+    match output {
+        Ok(out) => {
+            let res_str = String::from_utf8_lossy(&out.stdout);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}",
+                res_str
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+        Err(e) => {
+            let err_response = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{{\"error\": \"exec failed: {}\"}}",
+                e
+            );
+            let _ = stream.write_all(err_response.as_bytes());
+        }
+    }
 }
 
 fn handle_pc_status(mut stream: std::net::TcpStream) {
-    let output = std::process::Command::new("./build/lupin-pc")
+    let Some(bin) = neuro_pc_bin() else {
+        let err_response =
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n\r\n{\"error\": \"neuro-pc binary not found\"}";
+        let _ = stream.write_all(err_response.as_bytes());
+        return;
+    };
+    let output = std::process::Command::new(bin)
         .arg("status")
         .output();
         
