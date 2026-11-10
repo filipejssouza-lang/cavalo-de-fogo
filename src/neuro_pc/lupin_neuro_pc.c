@@ -23,6 +23,7 @@
  */
 #include "lupin_neuro_pc.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +90,8 @@ void lupin_neuro_pc_reset(neuro_pc_state_t *pc) {
     if (pc->ram) memset(pc->ram, 0, NEURO_PC_RAM_BYTES);
     if (pc->drom) memset(pc->drom, 0, NEURO_PC_DROM_BYTES);
     if (pc->rom) memset(pc->rom, 0, NEURO_PC_ROM_BYTES);
+    /* O reset limpa o store: o estado e recomecado do zero. */
+    memset(&pc->store, 0, sizeof(pc->store));
 }
 
 void lupin_neuro_pc_free(neuro_pc_state_t *pc) {
@@ -451,9 +454,248 @@ int lupin_neuro_pc_step(neuro_pc_state_t *pc, uint32_t max_cycles) {
 #define LUPIN_RV_CROSS_CC "riscv64-linux-gnu-gcc"
 #endif
 
+/*
+ * ==========================================================================================
+ * Lupin-Guard (L1) — filtro deterministico de politica do no.
+ * ==========================================================================================
+ *
+ * POR QUE ESTE ARQUIVO EXISTE SEPARADAMENTE
+ * -------------------------------------------
+ * A primeira versão do guard (produzida na Sessão Jules 8846163494234341258 /
+ * 17561978189723889262) copiava o comando inteiro para dois buffers de 2048 bytes
+ * na pilha (`code_lower` e `code_no_space`) e depois os comparava com `strstr`.
+ *
+ * ISSO É UM BYPASS DE SEGURANÇA: um comando com mais de 2048 caracteres era
+ * TRUNCADO SILENCIOSAMENTE, e o padrão destrutivo que viesse depois do corte
+ * passava direto. Reproduzido:
+ *
+ *     3000 x 'x' + " ; rm -rf /"        -> guard retorna 0 (PERMITIDO)  [deveria bloquear]
+ *     3000 x 'x' + " ; gradle build"    -> guard retorna 0 (PERMITIDO)  [deveria bloquear]
+ *     3000 x 'x' + " ; :(){ :|:& };:"   -> guard retorna 0 (PERMITIDO)  [deveria bloquear]
+ *
+ * A correção é processar o comando em STREAMING, com uma janela deslizante do
+ * tamanho do maior padrão (~16 bytes). Assim:
+ *   - não há buffer de tamanho fixo, logo não há truncamento;
+ *   - não há alocação (nada de malloc), logo o guard continua previsível;
+ *   - o custo é O(n × número de regras), com n = tamanho do comando.
+ *
+ * A normalização (minúsculas e colapsa de espaços) passa a ser feita sobre a
+ * JANELA, não sobre o comando inteiro.
+ */
+
+typedef struct {
+    const char *pattern;
+    const char *rule;
+    const char *message;
+    int match_prefix; /* 1 = o que vem depois do padrão precisa ser separador/fim */
+} neuro_pc_guard_rule_t;
+
+/* Diferente do guard in-weights, esta Camada 1 (L1) é um filtro de política do
+ * nó: aplica a regra de forma conservadora — qualquer menção a `gradle` é
+ * bloqueada, mesmo como argumento no meio do comando, porque o objetivo é não
+ * deixar o build local acontecer.
+ *
+ * A lista espelha a tabela soberana (guard/commands.json no repo lupin-neuro-os):
+ * os 5 comandos proibidos das regras da Matilha. `reboot -f` está aqui porque é
+ * a queda forçada de energia sem sync — a mesma regra `ForcedPowerKill` do
+ * guard in-weights e do crate Rust lupin-guard-core. */
+static const neuro_pc_guard_rule_t NEURO_PC_GUARD_RULES[] = {
+    { "./gradlew",   "no_gradlew",     "Compilacao local proibida (use gh workflow run)", 0 },
+    { "gradle",      "no_gradle",      "Compilacao local proibida (use gh workflow run)", 0 },
+    { ":(){:|:&};:", "no_fork_bomb",   "Fork bomb proibida",                             0 },
+    { "rm -rf /",    "no_rm_rf_root",  "Destruicao do filesystem proibida",              1 },
+    { "reboot -f",   "no_forced_kill", "Queda forcada de energia proibida (use reboot)", 0 },
+};
+
+#define NEURO_PC_GUARD_RULE_COUNT \
+    (sizeof(NEURO_PC_GUARD_RULES) / sizeof(NEURO_PC_GUARD_RULES[0]))
+
+/* O maior padrão ("rm -rf /" tem 8; ":(){:|:&};:" tem 12) mais folga. */
+#define NEURO_PC_GUARD_MAX_PATTERN 32
+
+static char neuro_pc_lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
+static int neuro_pc_is_space(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+/* Depois do padrão, o comando deve ter um separador (ou fim). */
+static int neuro_pc_after_is_separator(char c) {
+    return c == '\0' || c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+           c == ';' || c == '|' || c == '&';
+}
+
+/*
+ * Casa um padrão no comando, em streaming, normalizando minúsculas e
+ * colapsando espaços em branco.
+ *
+ * `win` é a janela deslizante (tamanho >= len(pattern)+1). `wlen` é o quanto já
+ * foi escrito nela; `sp` marca que o último caractere escrito foi um espaço
+ * (para colapsar espaços repetidos).
+ *
+ * Devolve 1 se o padrão casar; nesse caso `*after` recebe o caractere seguinte
+ * ao casamento (ou '\0' se o padrão chegou ao fim do comando).
+ *
+ * IMPORTANTE: o scan começa em `from`, para que o chamador possa CONTINUAR a
+ * busca. Sem isso, um "rm -rf /home" no começo do comando faria o scan parar no
+ * primeiro casamento e o "rm -rf /" logo depois passaria batido.
+ */
+static int neuro_pc_guard_scan(const char *code, const char *pattern,
+                                char *win, size_t win_cap, size_t *wlen, int *sp,
+                                char *after, const char *from) {
+    size_t plen = strlen(pattern);
+    if (plen == 0 || plen + 1 > win_cap) return 0;
+    *after = '\0';
+    const char *start = from ? from : code;
+    for (const char *p = start; *p; p++) {
+        char c = neuro_pc_lower(*p);
+        if (neuro_pc_is_space(c)) {
+            if (*sp) continue;          /* colapsa espacos repetidos */
+            c = ' ';                    /* normaliza \t \n \r para ' ' */
+            *sp = 1;
+        } else {
+            *sp = 0;
+        }
+        /* desloca a janela */
+        if (*wlen + 1 < win_cap) {
+            win[(*wlen)++] = c;
+        } else {
+            memmove(win, win + 1, *wlen - 1);
+            win[*wlen - 1] = c;
+        }
+        if (*wlen >= plen && memcmp(win + (*wlen - plen), pattern, plen) == 0) {
+            *after = neuro_pc_lower(p[1]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Procura a primeira ocorrência do padrão que satisfaz a regra, varrendo TODAS
+ * as ocorrências (não só a primeira).
+ */
+static int neuro_pc_guard_find(const char *code, const neuro_pc_guard_rule_t *rule,
+                                char *after) {
+    char win[NEURO_PC_GUARD_MAX_PATTERN + 1];
+    const char *from = code;
+    *after = '\0';
+    for (;;) {
+        size_t wlen = 0;
+        int sp = 0;
+        char a = '\0';
+        if (!neuro_pc_guard_scan(code, rule->pattern, win, sizeof(win), &wlen, &sp, &a, from)) {
+            return 0;
+        }
+        if (!rule->match_prefix || neuro_pc_after_is_separator(a)) {
+            *after = a;
+            return 1;
+        }
+        /* esta ocorrencia nao viola (ex.: "rm -rf /home"); procura a proxima.
+         * avanca 1 caractere DEPOIS do inicio do casamento atual. */
+        from += (size_t)(from - code) + 1;
+    }
+}
+
+/*
+ * Variante para o padrão da fork bomb, que CONTEM separadores internos
+ * (':' '&' ';') e por isso nao sobrevive a normalizacao de espacos.
+ * Casa no texto bruto, sem espacos.
+ */
+static int neuro_pc_guard_scan_nospace(const char *code, const char *pattern) {
+    size_t plen = strlen(pattern);
+    if (plen == 0) return 0;
+    size_t k = 0; /* chars do comando ate agora, sem espacos */
+    size_t l = 0; /* chars do padrao ate agora */
+    const char *p = code;
+    for (; *p; p++) {
+        char c = *p;
+        if (neuro_pc_is_space(c)) continue;
+        if (c == neuro_pc_lower(pattern[l])) {
+            l++;
+            if (l == plen) return 1;
+        } else {
+            /* volta ao inicio: re Casa o padrao (KMP simples, padroes curtos) */
+            l = (c == neuro_pc_lower(pattern[0])) ? 1 : 0;
+        }
+        k++;
+    }
+    (void)k;
+    return 0;
+}
+
+/*
+ * Devolve 0 se o comando e permitido, ou NEURO_PC_FAULT_GUARD se violou uma
+ * regra. Nao aloca memoria. Nao trunca o comando.
+ */
+int lupin_neuro_pc_guard_check(const char *code) {
+    if (!code || !*code) return 0;
+
+    for (size_t r = 0; r < NEURO_PC_GUARD_RULE_COUNT; r++) {
+        const neuro_pc_guard_rule_t *rule = &NEURO_PC_GUARD_RULES[r];
+        char after = '\0';
+        if (strcmp(rule->rule, "no_fork_bomb") == 0) {
+            if (neuro_pc_guard_scan_nospace(code, rule->pattern)) {
+                return NEURO_PC_FAULT_GUARD;
+            }
+            continue;
+        }
+        if (neuro_pc_guard_find(code, rule, &after)) {
+            return NEURO_PC_FAULT_GUARD;
+        }
+    }
+    return 0;
+}
+
+/* Devolve a mensagem da regra violada (ou NULL se nenhuma violou). */
+const char *lupin_neuro_pc_guard_message(const char *code) {
+    if (!code || !*code) return NULL;
+    for (size_t r = 0; r < NEURO_PC_GUARD_RULE_COUNT; r++) {
+        const neuro_pc_guard_rule_t *rule = &NEURO_PC_GUARD_RULES[r];
+        char after = '\0';
+        if (strcmp(rule->rule, "no_fork_bomb") == 0) {
+            if (neuro_pc_guard_scan_nospace(code, rule->pattern)) return rule->message;
+            continue;
+        }
+        if (neuro_pc_guard_find(code, rule, &after)) return rule->message;
+    }
+    return NULL;
+}
+
+/* Devolve o nome da regra violada (ou NULL). Usado pela rota HTTP do daemon. */
+const char *lupin_neuro_pc_guard_rule(const char *code) {
+    if (!code || !*code) return NULL;
+    for (size_t r = 0; r < NEURO_PC_GUARD_RULE_COUNT; r++) {
+        const neuro_pc_guard_rule_t *rule = &NEURO_PC_GUARD_RULES[r];
+        char after = '\0';
+        if (strcmp(rule->rule, "no_fork_bomb") == 0) {
+            if (neuro_pc_guard_scan_nospace(code, rule->pattern)) return rule->rule;
+            continue;
+        }
+        if (neuro_pc_guard_find(code, rule, &after)) return rule->rule;
+    }
+    return NULL;
+}
+
+
 int lupin_neuro_pc_run_script(neuro_pc_state_t *pc, const char *code, char *out_buf, size_t out_max) {
     if (!pc || !code || !out_buf || out_max == 0) return -1;
     out_buf[0] = '\0';
+
+    /* O Guard (L1) roda ANTES de qualquer execucao: se o comando viola a
+     * politica soberana do no, nada e compilado nem executado. */
+    int guard_res = lupin_neuro_pc_guard_check(code);
+    if (guard_res > 0) {
+        pc->fault = guard_res;
+        const char *msg = lupin_neuro_pc_guard_message(code);
+        if (msg) {
+            snprintf(pc->stdout_buf, sizeof(pc->stdout_buf), "%s", msg);
+            snprintf(out_buf, out_max, "%s", msg);
+        }
+        return -1;
+    }
 
     /* mkstemp substitui o XXXXXX no buffer; os caminhos definitivos saem
      * de snprintf (o template do mkstemp nao pode ter sufixo depois do XXXXXX). */
@@ -585,7 +827,308 @@ int lupin_neuro_pc_run_script(neuro_pc_state_t *pc, const char *code, char *out_
 
 const char *lupin_neuro_pc_fault_name(int fault) {
     static const char *names[] = {"illegal", "ebreak", "misaligned load", "misaligned store",
-                                  "load out of range", "store out of range", "bad jump", "ecall"};
-    if (fault < 0 || fault > 7) return "none";
+                                  "load out of range", "store out of range", "bad jump", "ecall",
+                                  "guard"};
+    if (fault < 0 || fault > 8) return "none";
     return names[fault];
+}
+
+/* ==========================================================================================
+ * Lupin-Store — key-value in-memory com tabela hash.
+ * ==========================================================================================
+ * A semantica espelha o store em pesos do Qwenputer: a chave decide a linha
+ * (aqui, por hash + sondagem linear; la, por chave one-hot no DeltaNet) e o
+ * valor e a celula. Sem alocacao: tudo vive dentro de neuro_pc_state_t.
+ */
+
+/* FNV-1a 32 bits: deterministico, sem dependencia externa. */
+static uint32_t neuro_pc_hash(const char *s) {
+    uint32_t h = 2166136261u;
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* Procura a chave. Devolve o indice da entrada, ou -1.
+ * `found` recebe 1 se a entrada existe, 0 se a celula esta livre (vaga para
+ * insercao) e -1 se a tabela esta cheia. */
+static int neuro_pc_store_find(const neuro_pc_store_t *store, const char *key,
+                               uint32_t hash, int *found) {
+    int idx = (int)(hash % NEURO_PC_STORE_MAX_ENTRIES);
+    for (int i = 0; i < NEURO_PC_STORE_MAX_ENTRIES; i++) {
+        const neuro_pc_store_entry_t *e = &store->entries[idx];
+        if (!e->used) {
+            *found = 0;
+            return idx;
+        }
+        if (e->hash == hash && strcmp(e->key, key) == 0) {
+            *found = 1;
+            return idx;
+        }
+        idx = (idx + 1) % NEURO_PC_STORE_MAX_ENTRIES;
+    }
+    *found = -1; /* tabela cheia */
+    return -1;
+}
+
+int lupin_store_put(neuro_pc_state_t *pc, const char *key, const char *value) {
+    if (!pc || !key || !value) return -1;
+    size_t klen = strlen(key), vlen = strlen(value);
+    if (klen == 0 || klen > NEURO_PC_STORE_KEY_MAX) return -1;
+    if (vlen > NEURO_PC_STORE_VAL_MAX) return -1;
+
+    uint32_t h = neuro_pc_hash(key);
+    int found = 0;
+    int idx = neuro_pc_store_find(&pc->store, key, h, &found);
+    if (idx < 0) return -1;                 /* tabela cheia */
+    if (found == 0) pc->store.count++;       /* entrada nova */
+
+    neuro_pc_store_entry_t *e = &pc->store.entries[idx];
+    memcpy(e->key, key, klen);
+    e->key[klen] = '\0';
+    memcpy(e->value, value, vlen);
+    e->value[vlen] = '\0';
+    e->used = 1;
+    e->hash = h;
+    pc->store.version++;
+    return 0;
+}
+
+int lupin_store_get(neuro_pc_state_t *pc, const char *key, char *out, size_t out_size) {
+    if (!pc || !key || !out || out_size == 0) return -1;
+    out[0] = '\0';
+    size_t klen = strlen(key);
+    if (klen == 0 || klen > NEURO_PC_STORE_KEY_MAX) return -1;
+
+    int found = 0;
+    int idx = neuro_pc_store_find(&pc->store, key, neuro_pc_hash(key), &found);
+    if (idx < 0 || found != 1) return -1;
+    snprintf(out, out_size, "%s", pc->store.entries[idx].value);
+    return 0;
+}
+
+int lupin_store_delete(neuro_pc_state_t *pc, const char *key) {
+    if (!pc || !key) return -1;
+    size_t klen = strlen(key);
+    if (klen == 0 || klen > NEURO_PC_STORE_KEY_MAX) return -1;
+
+    int found = 0;
+    int idx = neuro_pc_store_find(&pc->store, key, neuro_pc_hash(key), &found);
+    if (idx < 0 || found != 1) return -1;
+    pc->store.entries[idx].used = 0;
+    pc->store.entries[idx].key[0] = '\0';
+    pc->store.entries[idx].value[0] = '\0';
+    pc->store.count--;
+    pc->store.version++;
+    return 0;
+}
+
+int lupin_store_list(neuro_pc_state_t *pc, char *out, size_t out_size) {
+    if (!pc || !out || out_size == 0) return -1;
+    out[0] = '\0';
+    size_t used = 0;
+    for (int i = 0; i < NEURO_PC_STORE_MAX_ENTRIES; i++) {
+        neuro_pc_store_entry_t *e = &pc->store.entries[i];
+        if (!e->used) continue;
+        size_t need = strlen(e->key) + 2; /* chave + \n + \0 */
+        if (used + need > out_size) break;
+        memcpy(out + used, e->key, strlen(e->key));
+        used += strlen(e->key);
+        out[used++] = '\n';
+    }
+    out[used] = '\0';
+    return (int)used ? (int)pc->store.count : 0;
+}
+
+int lupin_store_count(neuro_pc_state_t *pc) {
+    if (!pc) return -1;
+    return pc->store.count;
+}
+
+/* --- snapshot binario ---
+ *   0  : magic  "LPS1"   (u32 LE)
+ *   4  : versao          (u32 LE)
+ *   8  : count           (u32 LE)
+ *  12  : payload_bytes   (u32 LE)
+ *  16  : checksum FNV-1a do payload (u32 LE)
+ *  20  : payload — para cada entrada: key_len(u8), key, val_len(u8), value
+ */
+int lupin_store_snapshot(const neuro_pc_store_t *store, uint8_t *buf, size_t buf_size) {
+    if (!store || !buf) return -1;
+
+    /* monta o payload primeiro (para saber o tamanho e o checksum) */
+    size_t payload_len = 0;
+    for (int i = 0; i < NEURO_PC_STORE_MAX_ENTRIES; i++) {
+        if (!store->entries[i].used) continue;
+        payload_len += 1 + strlen(store->entries[i].key);
+        payload_len += 1 + strlen(store->entries[i].value);
+    }
+    if (buf_size < 20 + payload_len) return -1;
+
+    uint8_t *payload = buf + 20;
+    size_t p = 0;
+    for (int i = 0; i < NEURO_PC_STORE_MAX_ENTRIES; i++) {
+        const neuro_pc_store_entry_t *e = &store->entries[i];
+        if (!e->used) continue;
+        size_t kl = strlen(e->key), vl = strlen(e->value);
+        payload[p++] = (uint8_t)kl;
+        memcpy(payload + p, e->key, kl);
+        p += kl;
+        payload[p++] = (uint8_t)vl;
+        memcpy(payload + p, e->value, vl);
+        p += vl;
+    }
+
+    uint32_t checksum = neuro_pc_hash((const char *)payload);
+    /* o checksum e sobre o payload; neuro_pc_hash le ate o NUL, entao calculamos
+     * sobre os bytes crus */
+    checksum = 2166136261u;
+    for (size_t i = 0; i < payload_len; i++) {
+        checksum ^= payload[i];
+        checksum *= 16777619u;
+    }
+
+    uint32_t magic = NEURO_PC_STORE_MAGIC;
+    uint32_t version = NEURO_PC_STORE_VERSION;
+    uint32_t count = (uint32_t)store->count;
+    uint32_t plen = (uint32_t)payload_len;
+    memcpy(buf + 0, &magic, 4);
+    memcpy(buf + 4, &version, 4);
+    memcpy(buf + 8, &count, 4);
+    memcpy(buf + 12, &plen, 4);
+    memcpy(buf + 16, &checksum, 4);
+    return (int)(20 + payload_len);
+}
+
+int lupin_store_restore(neuro_pc_store_t *store, const uint8_t *buf, size_t buf_size) {
+    if (!store || !buf || buf_size < 20) return -1;
+
+    uint32_t magic, version, count, plen, checksum;
+    memcpy(&magic, buf + 0, 4);
+    memcpy(&version, buf + 4, 4);
+    memcpy(&count, buf + 8, 4);
+    memcpy(&plen, buf + 12, 4);
+    memcpy(&checksum, buf + 16, 4);
+    if (magic != NEURO_PC_STORE_MAGIC) return -1;
+    if (version != NEURO_PC_STORE_VERSION) return -1;
+    if ((size_t)plen + 20 > buf_size) return -1;
+
+    uint32_t calc = 2166136261u;
+    for (uint32_t i = 0; i < plen; i++) {
+        calc ^= buf[20 + i];
+        calc *= 16777619u;
+    }
+    if (calc != checksum) return -1;
+
+    /* so escreve no store depois de validar tudo */
+    neuro_pc_store_t tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    size_t p = 0;
+    uint32_t seen = 0;
+    while (p < plen) {
+        if (p + 1 > plen) return -1;
+        uint8_t kl = buf[20 + p++];
+        if (p + kl > plen) return -1;
+        if (kl == 0 || kl > NEURO_PC_STORE_KEY_MAX) return -1;
+        char key[NEURO_PC_STORE_KEY_MAX + 1];
+        memcpy(key, buf + 20 + p, kl);
+        key[kl] = '\0';
+        p += kl;
+        if (p + 1 > plen) return -1;
+        uint8_t vl = buf[20 + p++];
+        if (p + vl > plen) return -1;
+        /* vl e um uint8_t (0..255), e o limite de valor e 256: sempre cabe. */
+        char val[NEURO_PC_STORE_VAL_MAX + 1];
+        memcpy(val, buf + 20 + p, vl);
+        val[vl] = '\0';
+        p += vl;
+
+        if (seen >= NEURO_PC_STORE_MAX_ENTRIES) return -1;
+        uint32_t h = neuro_pc_hash(key);
+        int found = 0;
+        int idx = neuro_pc_store_find(&tmp, key, h, &found);
+        if (idx < 0 || found != 0) return -1; /* chave repetida ou cheia */
+        neuro_pc_store_entry_t *e = &tmp.entries[idx];
+        memcpy(e->key, key, kl + 1);
+        memcpy(e->value, val, vl + 1);
+        e->used = 1;
+        e->hash = h;
+        tmp.count++;
+        seen++;
+    }
+    if (seen != count) return -1;
+
+    *store = tmp;
+    return 0;
+}
+
+/* --- persistencia em disco --- */
+
+const char *lupin_store_default_path(void) {
+    const char *env = getenv("LUPIN_STORE_PATH");
+    if (env && *env) return env;
+    return NEURO_PC_STORE_PATH_DEFAULT;
+}
+
+int lupin_store_save_file(const neuro_pc_store_t *store, const char *path) {
+    if (!store || !path || !*path) return -1;
+
+    /* buffer dimensionado pelo pior caso: 64 entradas * (1+64+1+256) + cabecalho */
+    static uint8_t buf[20 + NEURO_PC_STORE_MAX_ENTRIES *
+                       (1 + NEURO_PC_STORE_KEY_MAX + 1 + NEURO_PC_STORE_VAL_MAX)];
+    int n = lupin_store_snapshot(store, buf, sizeof(buf));
+    if (n < 0) return -1;
+
+    /* escrita atomica: arquivo temporario + rename, para que uma queda no meio
+     * da escrita nao deixe um snapshot pela metade no disco. */
+    char tmp[1024];
+    int len = snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    if (len < 0 || len >= (int)sizeof(tmp)) return -1;
+
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return -1;
+    size_t wrote = fwrite(buf, 1, (size_t)n, f);
+    int ok = (wrote == (size_t)n);
+    if (fflush(f) != 0) ok = 0;
+    if (fclose(f) != 0) ok = 0;
+    if (!ok) {
+        unlink(tmp);
+        return -1;
+    }
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+int lupin_store_load_file(neuro_pc_store_t *store, const char *path) {
+    if (!store || !path || !*path) return -1;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        /* O arquivo ainda nao existe: um store VAZIO e um estado valido, nao
+         * um erro. (So um arquivo que existe e esta corrompido e erro.) */
+        if (errno == ENOENT) {
+            memset(store, 0, sizeof(*store));
+            return 0;
+        }
+        return -1;
+    }
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 20) { fclose(f); return -1; }
+
+    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
+    if (!buf) { fclose(f); return -1; }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) { free(buf); return -1; }
+
+    int rc = lupin_store_restore(store, buf, (size_t)sz);
+    free(buf);
+    return rc;
 }

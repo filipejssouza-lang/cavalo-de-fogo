@@ -516,7 +516,21 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
             handle_pc_status(stream);
         } else if req.starts_with("POST /pc/reset") {
             handle_pc_reset(stream);
-} else if req.starts_with("GET /metrics") {
+        } else if req.starts_with("POST /pc/store/put") {
+            handle_pc_store_put(stream, &req);
+        } else if req.starts_with("POST /pc/store/get") {
+            handle_pc_store_get(stream, &req);
+        } else if req.starts_with("POST /pc/store/delete") {
+            handle_pc_store_delete(stream, &req);
+        } else if req.starts_with("GET /pc/store/list")
+            || req.starts_with("POST /pc/store/list")
+        {
+            handle_pc_store_list(stream);
+        } else if req.starts_with("GET /pc/store/count")
+            || req.starts_with("POST /pc/store/count")
+        {
+            handle_pc_store_count(stream);
+        } else if req.starts_with("GET /metrics") {
             let total = state.total_inferences.load(Ordering::Relaxed);
             let telem = crate::telemetry::SiliconTelemetry::collect();
             let body = format!(
@@ -805,47 +819,6 @@ fn main() {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_health_endpoint() {
-        let npu_socket_exists = false;
-        let model_loaded = false;
-        let mode = "simulated";
-        let body = format!("{{\"status\":\"online\",\"npu\":\"hexagon-780\",\"npu_socket\":{},\"model_loaded\":{},\"mode\":\"{}\"}}\n", npu_socket_exists, model_loaded, mode);
-        assert!(body.contains("\"status\":\"online\""));
-        assert!(body.contains("\"npu\":\"hexagon-780\""));
-        assert!(body.contains("\"npu_socket\":false"));
-        assert!(body.contains("\"mode\":\"simulated\""));
-    }
-
-    #[test]
-    fn test_metrics_endpoint() {
-        let total = 0;
-        let telem = crate::telemetry::SiliconTelemetry::collect();
-        let body = format!(
-            "{{\"avg_latency_ms\":15.5,\"tokens_per_sec\":42.7,\"memory_usage_mb\":128.0,\"total_inferences\":{},\"telemetry\":{}}}\n",
-            total,
-            telem.to_json().trim()
-        );
-        assert!(body.contains("\"avg_latency_ms\""));
-        assert!(body.contains("\"tokens_per_sec\""));
-        assert!(body.contains("\"memory_usage_mb\""));
-        assert!(body.contains("\"total_inferences\""));
-        assert!(body.contains("\"telemetry\""));
-    }
-
-    #[test]
-    fn test_cam_shot_endpoint_format() {
-        let lens = "wide";
-        let resp_body = format!("{{\"status\":\"success\", \"lens\":\"{}\"}}\n", lens);
-        assert!(resp_body.contains("\"status\":\"success\""));
-        assert!(resp_body.contains("\"lens\":\"wide\""));
-
-        let post_json = "{\"lens\":\"front\",\"width\":2592,\"height\":1940}";
-        assert!(post_json.contains("\"lens\":"));
-    }
-}
 /// Caminho absoluto do binário do motor Neuro-PC.
 ///
 /// Antes isto era "./build/lupin-pc" — um caminho RELATIVO ao CWD do daemon.
@@ -919,6 +892,17 @@ fn handle_pc_run(mut stream: std::net::TcpStream, request_body: &str) {
     match output {
         Ok(out) => {
             let res_str = String::from_utf8_lossy(&out.stdout);
+            // O Guard (L1) e aplicado pelo proprio motor, antes de qualquer
+            // execucao. Se o comando violou a politica do no, respondemos 403
+            // com a regra violada, e o binario NAO executou nada.
+            if res_str.contains("\"fault\": \"guard\"") {
+                let response = format!(
+                    "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\n\r\n{}",
+                    res_str
+                );
+                let _ = stream.write_all(response.as_bytes());
+                return;
+            }
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}",
                 res_str
@@ -932,6 +916,135 @@ fn handle_pc_run(mut stream: std::net::TcpStream, request_body: &str) {
             );
             let _ = stream.write_all(err_response.as_bytes());
         }
+    }
+}
+
+/// O binario do motor e o DONO do estado do store: o daemon so o orquestra.
+/// Cada operacao carrega o snapshot, aplica e grava de volta, entao o store
+/// sobrevive a um restart do daemon — coisa que FFI com estado em memoria
+/// NAO faria.
+fn neuro_pc_store_cmd(args: &[&str]) -> Result<String, String> {
+    let bin = neuro_pc_bin().ok_or("neuro-pc binary not found")?;
+    let out = std::process::Command::new(bin)
+        .arg("store")
+        .args(args)
+        .output()
+        .map_err(|e| format!("exec failed: {e}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn json_escape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o
+}
+
+fn respond(mut stream: std::net::TcpStream, code: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {code}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+fn handle_pc_store_put(stream: std::net::TcpStream, request_body: &str) {
+    let (Some(key), Some(value)) = (
+        json_string_field(request_body, "key"),
+        json_string_field(request_body, "value"),
+    ) else {
+        respond(
+            stream,
+            "400 Bad Request",
+            "{\"status\":\"error\",\"error\":\"missing key or value\"}",
+        );
+        return;
+    };
+    match neuro_pc_store_cmd(&["put", &key, &value]) {
+        Ok(body) => {
+            let ok = body.contains("\"status\": \"ok\"");
+            respond(stream, if ok { "200 OK" } else { "400 Bad Request" }, &body)
+        }
+        Err(e) => respond(
+            stream,
+            "503 Service Unavailable",
+            &format!("{{\"status\":\"error\",\"error\":{}}}", json_escape(&e)),
+        ),
+    }
+}
+
+fn handle_pc_store_get(stream: std::net::TcpStream, request_body: &str) {
+    let Some(key) = json_string_field(request_body, "key") else {
+        respond(
+            stream,
+            "400 Bad Request",
+            "{\"status\":\"error\",\"error\":\"missing key\"}",
+        );
+        return;
+    };
+    match neuro_pc_store_cmd(&["get", &key]) {
+        Ok(body) => {
+            let ok = body.contains("\"status\": \"ok\"");
+            respond(stream, if ok { "200 OK" } else { "404 Not Found" }, &body)
+        }
+        Err(e) => respond(
+            stream,
+            "503 Service Unavailable",
+            &format!("{{\"status\":\"error\",\"error\":{}}}", json_escape(&e)),
+        ),
+    }
+}
+
+fn handle_pc_store_delete(stream: std::net::TcpStream, request_body: &str) {
+    let Some(key) = json_string_field(request_body, "key") else {
+        respond(
+            stream,
+            "400 Bad Request",
+            "{\"status\":\"error\",\"error\":\"missing key\"}",
+        );
+        return;
+    };
+    match neuro_pc_store_cmd(&["delete", &key]) {
+        Ok(body) => {
+            let ok = body.contains("\"status\": \"ok\"");
+            respond(stream, if ok { "200 OK" } else { "404 Not Found" }, &body)
+        }
+        Err(e) => respond(
+            stream,
+            "503 Service Unavailable",
+            &format!("{{\"status\":\"error\",\"error\":{}}}", json_escape(&e)),
+        ),
+    }
+}
+
+fn handle_pc_store_list(stream: std::net::TcpStream) {
+    match neuro_pc_store_cmd(&["list"]) {
+        Ok(body) => respond(stream, "200 OK", &body),
+        Err(e) => respond(
+            stream,
+            "503 Service Unavailable",
+            &format!("{{\"status\":\"error\",\"error\":{}}}", json_escape(&e)),
+        ),
+    }
+}
+
+fn handle_pc_store_count(stream: std::net::TcpStream) {
+    match neuro_pc_store_cmd(&["count"]) {
+        Ok(body) => respond(stream, "200 OK", &body),
+        Err(e) => respond(
+            stream,
+            "503 Service Unavailable",
+            &format!("{{\"status\":\"error\",\"error\":{}}}", json_escape(&e)),
+        ),
     }
 }
 
@@ -961,4 +1074,129 @@ fn handle_pc_reset(mut stream: std::net::TcpStream) {
     let _ = stream.write_all(response.as_bytes());
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{json_string_field, neuro_pc_bin};
 
+    #[test]
+    fn test_health_endpoint() {
+        let npu_socket_exists = false;
+        let model_loaded = false;
+        let mode = "simulated";
+        let body = format!("{{\"status\":\"online\",\"npu\":\"hexagon-780\",\"npu_socket\":{},\"model_loaded\":{},\"mode\":\"{}\"}}\n", npu_socket_exists, model_loaded, mode);
+        assert!(body.contains("\"status\":\"online\""));
+        assert!(body.contains("\"npu\":\"hexagon-780\""));
+        assert!(body.contains("\"npu_socket\":false"));
+        assert!(body.contains("\"mode\":\"simulated\""));
+    }
+
+    #[test]
+    fn test_metrics_endpoint() {
+        let total = 0;
+        let telem = crate::telemetry::SiliconTelemetry::collect();
+        let body = format!(
+            "{{\"avg_latency_ms\":15.5,\"tokens_per_sec\":42.7,\"memory_usage_mb\":128.0,\"total_inferences\":{},\"telemetry\":{}}}\n",
+            total,
+            telem.to_json().trim()
+        );
+        assert!(body.contains("\"avg_latency_ms\""));
+        assert!(body.contains("\"tokens_per_sec\""));
+        assert!(body.contains("\"memory_usage_mb\""));
+        assert!(body.contains("\"total_inferences\""));
+        assert!(body.contains("\"telemetry\""));
+    }
+
+    #[test]
+    fn test_cam_shot_endpoint_format() {
+        let lens = "wide";
+        let resp_body = format!("{{\"status\":\"success\", \"lens\":\"{}\"}}\n", lens);
+        assert!(resp_body.contains("\"status\":\"success\""));
+        assert!(resp_body.contains("\"lens\":\"wide\""));
+
+        let post_json = "{\"lens\":\"front\",\"width\":2592,\"height\":1940}";
+        assert!(post_json.contains("\"lens\":"));
+    }
+
+    // --- E1..E4: o parser de campo JSON e a operacao de store ---
+
+    #[test]
+    fn e1_json_string_field_escapes() {
+        // aspas escapadas
+        assert_eq!(
+            json_string_field(r#"{"code":"a\"b"}"#, "code").as_deref(),
+            Some("a\"b")
+        );
+        // quebra de linha escapada
+        assert_eq!(
+            json_string_field(r#"{"code":"a\nb"}"#, "code").as_deref(),
+            Some("a\nb")
+        );
+        // barra invertida
+        assert_eq!(
+            json_string_field(r#"{"code":"a\\b"}"#, "code").as_deref(),
+            Some("a\\b")
+        );
+    }
+
+    #[test]
+    fn e2_json_string_field_unicode() {
+        assert_eq!(
+            json_string_field(r#"{"code":"\u0041\u0042"}"#, "code").as_deref(),
+            Some("AB")
+        );
+    }
+
+    #[test]
+    fn e3_json_string_field_ausente() {
+        assert_eq!(json_string_field(r#"{"outro":"x"}"#, "code"), None);
+        assert_eq!(json_string_field("", "code"), None);
+        assert_eq!(json_string_field(r#"{"code": 42}"#, "code"), None);
+    }
+
+    #[test]
+    fn e4_store_sequencia_put_get_list_delete() {
+        // o store e do BINARIO (o daemon so orquestra), entao este teste
+        // verifica a forma da resposta e o contrato do caminho.
+        let bin = neuro_pc_bin();
+        assert!(bin.is_some(), "o binario lupin-pc nao foi encontrado");
+        let bin = bin.unwrap();
+
+        // um path no /tmp: o default (/var/lib/lupinos/...) exige privilegio.
+        let path = format!(
+            "/tmp/lupinos_neuro_store_test_{}.snap",
+            std::process::id()
+        );
+        let _ = std::fs::remove_file(&path);
+
+        let run = |args: &[&str]| -> String {
+            let out = std::process::Command::new(bin)
+                .arg("store")
+                .args(args)
+                .env("LUPIN_STORE_PATH", &path)
+                .output()
+                .expect("exec");
+            String::from_utf8_lossy(&out.stdout).to_string()
+        };
+
+        let put = run(&["put", "k1", "v1"]);
+        assert!(put.contains("\"status\": \"ok\""), "put: {put}");
+        assert!(put.contains("\"count\": 1"), "put: {put}");
+
+        let get = run(&["get", "k1"]);
+        assert!(get.contains("\"value\": \"v1\""), "get: {get}");
+
+        let list = run(&["list"]);
+        assert!(list.contains("\"count\": 1"), "list: {list}");
+        assert!(list.contains("k1"), "list: {list}");
+
+        // o estado sobrevive a um novo processo: o store e um arquivo
+        let count = run(&["count"]);
+        assert!(count.contains("\"count\": 1"), "count: {count}");
+
+        let del = run(&["delete", "k1"]);
+        assert!(del.contains("\"status\": \"ok\""), "delete: {del}");
+        assert!(del.contains("\"count\": 0"), "delete: {del}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+}

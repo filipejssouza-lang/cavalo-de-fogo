@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #include "lupin_neuro_pc.h"
 
@@ -20,7 +22,15 @@ static void print_usage(void) {
             "Uso:\n"
             "  lupin-pc status\n"
             "  lupin-pc run <codigo-C>\n"
-            "  lupin-pc elf <caminho.elf>\n");
+            "  lupin-pc elf <caminho.elf>\n"
+            "  lupin-pc store put <chave> <valor>\n"
+            "  lupin-pc store get <chave>\n"
+            "  lupin-pc store delete <chave>\n"
+            "  lupin-pc store list\n"
+            "  lupin-pc store count\n"
+            "\n"
+            "O store e persistido em %s (ou $LUPIN_STORE_PATH).\n",
+            NEURO_PC_STORE_PATH_DEFAULT);
 }
 
 /* Escapa uma string para um literal JSON (aspas, barras, controles). */
@@ -115,6 +125,90 @@ int main(int argc, char **argv) {
         lupin_neuro_pc_step(&pc, 10000000);
         emit_result(&pc, pc.fault == NEURO_PC_OK ? "ok" : "error");
         rc = (pc.fault != NEURO_PC_OK || pc.exit_code != 0) ? 1 : 0;
+    } else if (strcmp(argv[1], "store") == 0 && argc >= 3) {
+        /* O binario e o DONO do estado do store: o daemon so o orquestra.
+         * Cada operacao carrega o snapshot, aplica e grava de volta, entao o
+         * store sobrevive a um restart do daemon. */
+        const char *op = argv[2];
+        const char *path = lupin_store_default_path();
+
+        /* O diretorio do snapshot precisa existir. */
+        {
+            char dir[1024];
+            int dl = snprintf(dir, sizeof(dir), "%s", path);
+            if (dl > 0 && dl < (int)sizeof(dir)) {
+                char *slash = strrchr(dir, '/');
+                if (slash) {
+                    *slash = '\0';
+                    if (dir[0]) mkdir(dir, 0755); /* ja existir e' o normal */
+                }
+            }
+        }
+
+        if (strcmp(op, "put") == 0 && argc >= 5) {
+            if (lupin_store_load_file(&pc.store, path) != 0) {
+                printf("{\"status\": \"error\", \"error\": \"snapshot corrompido ou ilegivel\"}\n");
+                rc = 1;
+            } else if (lupin_store_put(&pc, argv[3], argv[4]) != 0) {
+                printf("{\"status\": \"error\", \"error\": \"put falhou\"}\n");
+                rc = 1;
+            } else if (lupin_store_save_file(&pc.store, path) != 0) {
+                printf("{\"status\": \"error\", \"error\": \"nao foi possivel gravar o snapshot\"}\n");
+                rc = 1;
+            } else {
+                printf("{\"status\": \"ok\", \"count\": %d}\n", lupin_store_count(&pc));
+            }
+        } else if (strcmp(op, "get") == 0) {
+            char out[NEURO_PC_STORE_VAL_MAX + 1];
+            if (lupin_store_load_file(&pc.store, path) != 0) {
+                printf("{\"status\": \"error\", \"error\": \"snapshot corrompido ou ilegivel\"}\n");
+                rc = 1;
+            } else if (lupin_store_get(&pc, argv[3], out, sizeof(out)) != 0) {
+                printf("{\"status\": \"error\", \"error\": \"not found\"}\n");
+                rc = 1;
+            } else {
+                char escaped[NEURO_PC_STORE_VAL_MAX * 6 + 64];
+                json_escape(out, escaped, sizeof(escaped));
+                printf("{\"status\": \"ok\", \"value\": \"%s\"}\n", escaped);
+            }
+        } else if (strcmp(op, "delete") == 0) {
+            if (lupin_store_load_file(&pc.store, path) != 0) {
+                printf("{\"status\": \"error\", \"error\": \"snapshot corrompido ou ilegivel\"}\n");
+                rc = 1;
+            } else if (lupin_store_delete(&pc, argv[3]) != 0) {
+                printf("{\"status\": \"error\", \"error\": \"not found\"}\n");
+                rc = 1;
+            } else if (lupin_store_save_file(&pc.store, path) != 0) {
+                printf("{\"status\": \"error\", \"error\": \"nao foi possivel gravar o snapshot\"}\n");
+                rc = 1;
+            } else {
+                printf("{\"status\": \"ok\", \"count\": %d}\n", lupin_store_count(&pc));
+            }
+        } else if (strcmp(op, "list") == 0) {
+            char out[NEURO_PC_STORE_MAX_ENTRIES * (NEURO_PC_STORE_KEY_MAX + 2)];
+            out[0] = '\0';
+            if (lupin_store_load_file(&pc.store, path) != 0) {
+                printf("{\"status\": \"error\", \"error\": \"snapshot corrompido ou ilegivel\"}\n");
+                rc = 1;
+            } else {
+                lupin_store_list(&pc, out, sizeof(out));
+                char escaped[NEURO_PC_STORE_MAX_ENTRIES * (NEURO_PC_STORE_KEY_MAX + 2) * 6 + 64];
+                json_escape(out, escaped, sizeof(escaped));
+                /* as chaves vem separadas por \n; o JSON usa \n escapado */
+                printf("{\"status\": \"ok\", \"count\": %d, \"keys\": \"%s\"}\n",
+                       lupin_store_count(&pc), escaped);
+            }
+        } else if (strcmp(op, "count") == 0) {
+            if (lupin_store_load_file(&pc.store, path) != 0) {
+                printf("{\"status\": \"error\", \"error\": \"snapshot corrompido ou ilegivel\"}\n");
+                rc = 1;
+            } else {
+                printf("{\"status\": \"ok\", \"count\": %d}\n", lupin_store_count(&pc));
+            }
+        } else {
+            print_usage();
+            rc = 1;
+        }
     } else {
         print_usage();
         rc = 1;
