@@ -11,6 +11,7 @@ endif
 
 CFLAGS = -O3 $(STATIC) $(ARCH_FLAGS) -ffast-math -Wall
 LDFLAGS = $(STATIC) -lm -lpthread -ldl
+DRM_FLAGS = -I/usr/include/libdrm -ldrm
 
 SRC_CPU = src/cpu/neon_kernels.c src/cpu/governor_control.c
 SRC_NPU = src/npu/fastrpc_cdsp.c src/npu/fastrpc_npu.c
@@ -22,7 +23,7 @@ OBJ_NPU = $(SRC_NPU:.c=.o)
 OBJ_GUARDIAN = $(SRC_GUARDIAN:.c=.o)
 OBJ_BENCH = $(SRC_BENCH:.c=.o)
 
-TARGETS = build/lupinos_guard build/bench_extreme build/drm_subdisplay build/lupin-power build/lupinctl build/lupin_slot_ctl build/lupin_lp_query build/lupin-audio build/test_music
+TARGETS = build/lupinos_guard build/bench_extreme build/drm_subdisplay build/lupin-power build/lupinctl build/lupin_slot_ctl build/lupin_lp_query build/lupin-audio build/test_music build/lupin-pc build/test_neuro_pc
 
 all: $(TARGETS)
 
@@ -31,7 +32,7 @@ hud: build/drm_subdisplay
 
 build/drm_subdisplay: src/display/drm_subdisplay.c
 	@mkdir -p build
-	$(CC) -O2 $(STATIC) -Wall $< -o $@ $(LDFLAGS)
+	$(CC) -O2 $(STATIC) -Wall $< -o $@ $(LDFLAGS) $(DRM_FLAGS)
 
 build/lupin-power: src/cpu/lupin_power.c src/cpu/governor_control.c
 	@mkdir -p build
@@ -82,4 +83,16 @@ build/test_music: tests/test_music.c src/audio/lupin_music.c
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Isrc/audio $^ -o $@ $(LDFLAGS)
 
+
+
+build/lupin-pc: src/neuro_pc/lupin_pc_cli.c src/neuro_pc/lupin_neuro_pc.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+build/test_neuro_pc: tests/test_neuro_pc.c src/neuro_pc/lupin_neuro_pc.c
+	@mkdir -p build
+	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
+
+test: build/test_neuro_pc
+	./build/test_neuro_pc
 

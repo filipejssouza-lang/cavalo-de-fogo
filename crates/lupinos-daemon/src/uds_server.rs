@@ -141,7 +141,25 @@ pub fn start_uds_server() {
                                     }
                                 }
                                 "net" => format!("Net set to {:?}\n", parts.get(1)),
-                                "npu" => format!("NPU set to {:?}\n", parts.get(1)),
+                                
+                                "pc" => {
+                                    if parts.len() >= 2 {
+                                        let subcmd = parts[1];
+                                        let mut cmd_exec = std::process::Command::new("./build/lupin-pc");
+                                        cmd_exec.arg(subcmd);
+                                        if parts.len() >= 3 {
+                                            cmd_exec.arg(parts[2]);
+                                        }
+                                        if let Ok(out) = cmd_exec.output() {
+                                            String::from_utf8_lossy(&out.stdout).to_string()
+                                        } else {
+                                            "ERROR: Failed to execute lupin-pc\n".to_string()
+                                        }
+                                    } else {
+                                        "ERROR: Usage: pc <status|run|elf> [args...]\n".to_string()
+                                    }
+                                }
+"npu" => format!("NPU set to {:?}\n", parts.get(1)),
                                 "thermal" => format!("Thermal Mode: {}\n", telem.thermal_mode),
                                 "peltier" => {
                                     match parts.get(1) {
