@@ -51,7 +51,8 @@ typedef enum {
     NEURO_PC_FAULT_LOAD_OUT_OF_RANGE,
     NEURO_PC_FAULT_STORE_OUT_OF_RANGE,
     NEURO_PC_FAULT_BAD_JUMP,
-    NEURO_PC_FAULT_ECALL
+    NEURO_PC_FAULT_ECALL,
+    NEURO_PC_FAULT_GUARD          /* <-- NOVO, valor 8: violacao da politica do no */
 } neuro_pc_fault_t;
 
 typedef struct {
@@ -88,6 +89,17 @@ int lupin_neuro_pc_step(neuro_pc_state_t *pc, uint32_t max_cycles);
 /* Compila um trecho C para RV32 e o executa. Devolve 0 em sucesso.
  * Exige um cross-compiler riscv64-linux-gnu-gcc no PATH. */
 int lupin_neuro_pc_run_script(neuro_pc_state_t *pc, const char *code, char *out_buf, size_t out_max);
+
+/* Lupin-Guard (L1): filtro deterministico de politica do no.
+ * Devolve 0 se o comando e permitido, ou NEURO_PC_FAULT_GUARD se viola uma
+ * regra soberana. Nao aloca memoria, nao trunca o comando e nao escreve em
+ * nenhum buffer do chamador. */
+int lupin_neuro_pc_guard_check(const char *code);
+
+/* A mensagem / o nome da regra violada pelo comando (NULL se nenhuma violou).
+ * Vem da MESMA varredura que decidiu o bloqueio. */
+const char *lupin_neuro_pc_guard_message(const char *code);
+const char *lupin_neuro_pc_guard_rule(const char *code);
 
 const char *lupin_neuro_pc_fault_name(int fault);
 

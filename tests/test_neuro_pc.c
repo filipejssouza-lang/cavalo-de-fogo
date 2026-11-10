@@ -189,6 +189,88 @@ static void test_alu_edge_cases(void) {
     printf("test_alu_edge_cases passed\n");
 }
 
+/* Monta um comando longo com um sufixo destrutivo, sem truncar. */
+static void neuro_pc_make_long(char *buf, size_t cap, size_t filler, const char *suffix) {
+    size_t slen = strlen(suffix);
+    if (cap == 0) return;
+    size_t n = filler;
+    if (n + slen + 1 > cap) n = (cap > slen + 1) ? cap - slen - 1 : 0;
+    for (size_t i = 0; i < n; i++) buf[i] = 'x';
+    memcpy(buf + n, suffix, slen);
+    buf[n + slen] = '\0';
+}
+
+static void test_guard_bloqueia_comandos_destrutivos(void) {
+    /* os 5 comandos proibidos pela regra da Matilha */
+    assert(lupin_neuro_pc_guard_check("./gradlew assembleRelease") == NEURO_PC_FAULT_GUARD);
+    assert(lupin_neuro_pc_guard_check("gradle build") == NEURO_PC_FAULT_GUARD);
+    assert(lupin_neuro_pc_guard_check("rm -rf /") == NEURO_PC_FAULT_GUARD);
+    assert(lupin_neuro_pc_guard_check("reboot -f") == NEURO_PC_FAULT_GUARD);
+    assert(lupin_neuro_pc_guard_check(":(){ :|:& };:") == NEURO_PC_FAULT_GUARD);
+    printf("test_guard_bloqueia_comandos_destrutivos passed\n");
+}
+
+static void test_guard_permite_comandos_seguros(void) {
+    assert(lupin_neuro_pc_guard_check("git status") == 0);
+    assert(lupin_neuro_pc_guard_check("cargo test") == 0);
+    assert(lupin_neuro_pc_guard_check("gh workflow run") == 0);
+    assert(lupin_neuro_pc_guard_check("cluster-status") == 0);
+    assert(lupin_neuro_pc_guard_check("") == 0);
+    assert(lupin_neuro_pc_guard_check(NULL) == 0);
+    printf("test_guard_permite_comandos_seguros passed\n");
+}
+
+static void test_guard_nao_bloqueia_subdiretorio(void) {
+    /* 'rm -rf /' com sufixo NAO e o mesmo comando que 'rm -rf /' */
+    assert(lupin_neuro_pc_guard_check("rm -rf /home/filipe") == 0);
+    assert(lupin_neuro_pc_guard_check("rm -rf /tmp") == 0);
+    assert(lupin_neuro_pc_guard_check("rm -rf /home/filipe/docs") == 0);
+    printf("test_guard_nao_bloqueia_subdiretorio passed\n");
+}
+
+static void test_guard_case_insensitive(void) {
+    assert(lupin_neuro_pc_guard_check("GRADLE BUILD") == NEURO_PC_FAULT_GUARD);
+    assert(lupin_neuro_pc_guard_check("RM -RF /") == NEURO_PC_FAULT_GUARD);
+    printf("test_guard_case_insensitive passed\n");
+}
+
+static void test_guard_bypass_por_truncamento(void) {
+    /* REGRESSAO: comando maior que o buffer interno nao pode ser truncado.
+     * O buffer do teste e grande de proposito — se o guard truncar, o padrao
+     * destrutivo fica fora do corte e o comando passa. */
+    char buf[8192];
+    neuro_pc_make_long(buf, sizeof(buf), 3000, " ; rm -rf /");
+    assert(lupin_neuro_pc_guard_check(buf) == NEURO_PC_FAULT_GUARD);
+
+    neuro_pc_make_long(buf, sizeof(buf), 3000, " ; gradle build");
+    assert(lupin_neuro_pc_guard_check(buf) == NEURO_PC_FAULT_GUARD);
+
+    neuro_pc_make_long(buf, sizeof(buf), 3000, " ; :(){ :|:& };:");
+    assert(lupin_neuro_pc_guard_check(buf) == NEURO_PC_FAULT_GUARD);
+
+    neuro_pc_make_long(buf, sizeof(buf), 7000, " ; rm -rf /");
+    assert(lupin_neuro_pc_guard_check(buf) == NEURO_PC_FAULT_GUARD);
+    printf("test_guard_bypass_por_truncamento passed\n");
+}
+
+static void test_guard_multiplas_ocorrencias(void) {
+    /* REGRESSAO: a busca tem de varrer TODAS as ocorrencias do padrao.
+     * A primeira ('rm -rf /home') nao viola; a segunda ('rm -rf /') viola. */
+    assert(lupin_neuro_pc_guard_check("rm -rf /home; rm -rf /") == NEURO_PC_FAULT_GUARD);
+    assert(lupin_neuro_pc_guard_check("gradle; rm -rf /") == NEURO_PC_FAULT_GUARD);
+    assert(lupin_neuro_pc_guard_check("rm -rf /home") == 0);
+    printf("test_guard_multiplas_ocorrencias passed\n");
+}
+
+static void test_guard_normaliza_espacos(void) {
+    assert(lupin_neuro_pc_guard_check("rm  -rf  /") == NEURO_PC_FAULT_GUARD);
+    assert(lupin_neuro_pc_guard_check("rm -rf / ") == NEURO_PC_FAULT_GUARD);
+    assert(lupin_neuro_pc_guard_check(":(){ :|:&};:") == NEURO_PC_FAULT_GUARD);
+    assert(lupin_neuro_pc_guard_check("git status && rm -rf /") == NEURO_PC_FAULT_GUARD);
+    printf("test_guard_normaliza_espacos passed\n");
+}
+
+
 int main(void) {
     test_init_free();
     test_rv32i_execution();
@@ -198,6 +280,13 @@ int main(void) {
     test_memory_regions();
     test_elf_rejects_garbage();
     test_alu_edge_cases();
+    test_guard_bloqueia_comandos_destrutivos();
+    test_guard_permite_comandos_seguros();
+    test_guard_nao_bloqueia_subdiretorio();
+    test_guard_case_insensitive();
+    test_guard_bypass_por_truncamento();
+    test_guard_multiplas_ocorrencias();
+    test_guard_normaliza_espacos();
     printf("All neuro_pc tests passed.\n");
     return 0;
 }

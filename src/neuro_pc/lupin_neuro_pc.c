@@ -451,9 +451,248 @@ int lupin_neuro_pc_step(neuro_pc_state_t *pc, uint32_t max_cycles) {
 #define LUPIN_RV_CROSS_CC "riscv64-linux-gnu-gcc"
 #endif
 
+/*
+ * ==========================================================================================
+ * Lupin-Guard (L1) — filtro deterministico de politica do no.
+ * ==========================================================================================
+ *
+ * POR QUE ESTE ARQUIVO EXISTE SEPARADAMENTE
+ * -------------------------------------------
+ * A primeira versão do guard (produzida na Sessão Jules 8846163494234341258 /
+ * 17561978189723889262) copiava o comando inteiro para dois buffers de 2048 bytes
+ * na pilha (`code_lower` e `code_no_space`) e depois os comparava com `strstr`.
+ *
+ * ISSO É UM BYPASS DE SEGURANÇA: um comando com mais de 2048 caracteres era
+ * TRUNCADO SILENCIOSAMENTE, e o padrão destrutivo que viesse depois do corte
+ * passava direto. Reproduzido:
+ *
+ *     3000 x 'x' + " ; rm -rf /"        -> guard retorna 0 (PERMITIDO)  [deveria bloquear]
+ *     3000 x 'x' + " ; gradle build"    -> guard retorna 0 (PERMITIDO)  [deveria bloquear]
+ *     3000 x 'x' + " ; :(){ :|:& };:"   -> guard retorna 0 (PERMITIDO)  [deveria bloquear]
+ *
+ * A correção é processar o comando em STREAMING, com uma janela deslizante do
+ * tamanho do maior padrão (~16 bytes). Assim:
+ *   - não há buffer de tamanho fixo, logo não há truncamento;
+ *   - não há alocação (nada de malloc), logo o guard continua previsível;
+ *   - o custo é O(n × número de regras), com n = tamanho do comando.
+ *
+ * A normalização (minúsculas e colapsa de espaços) passa a ser feita sobre a
+ * JANELA, não sobre o comando inteiro.
+ */
+
+typedef struct {
+    const char *pattern;
+    const char *rule;
+    const char *message;
+    int match_prefix; /* 1 = o que vem depois do padrão precisa ser separador/fim */
+} neuro_pc_guard_rule_t;
+
+/* Diferente do guard in-weights, esta Camada 1 (L1) é um filtro de política do
+ * nó: aplica a regra de forma conservadora — qualquer menção a `gradle` é
+ * bloqueada, mesmo como argumento no meio do comando, porque o objetivo é não
+ * deixar o build local acontecer.
+ *
+ * A lista espelha a tabela soberana (guard/commands.json no repo lupin-neuro-os):
+ * os 5 comandos proibidos das regras da Matilha. `reboot -f` está aqui porque é
+ * a queda forçada de energia sem sync — a mesma regra `ForcedPowerKill` do
+ * guard in-weights e do crate Rust lupin-guard-core. */
+static const neuro_pc_guard_rule_t NEURO_PC_GUARD_RULES[] = {
+    { "./gradlew",   "no_gradlew",     "Compilacao local proibida (use gh workflow run)", 0 },
+    { "gradle",      "no_gradle",      "Compilacao local proibida (use gh workflow run)", 0 },
+    { ":(){:|:&};:", "no_fork_bomb",   "Fork bomb proibida",                             0 },
+    { "rm -rf /",    "no_rm_rf_root",  "Destruicao do filesystem proibida",              1 },
+    { "reboot -f",   "no_forced_kill", "Queda forcada de energia proibida (use reboot)", 0 },
+};
+
+#define NEURO_PC_GUARD_RULE_COUNT \
+    (sizeof(NEURO_PC_GUARD_RULES) / sizeof(NEURO_PC_GUARD_RULES[0]))
+
+/* O maior padrão ("rm -rf /" tem 8; ":(){:|:&};:" tem 12) mais folga. */
+#define NEURO_PC_GUARD_MAX_PATTERN 32
+
+static char neuro_pc_lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
+static int neuro_pc_is_space(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+/* Depois do padrão, o comando deve ter um separador (ou fim). */
+static int neuro_pc_after_is_separator(char c) {
+    return c == '\0' || c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+           c == ';' || c == '|' || c == '&';
+}
+
+/*
+ * Casa um padrão no comando, em streaming, normalizando minúsculas e
+ * colapsando espaços em branco.
+ *
+ * `win` é a janela deslizante (tamanho >= len(pattern)+1). `wlen` é o quanto já
+ * foi escrito nela; `sp` marca que o último caractere escrito foi um espaço
+ * (para colapsar espaços repetidos).
+ *
+ * Devolve 1 se o padrão casar; nesse caso `*after` recebe o caractere seguinte
+ * ao casamento (ou '\0' se o padrão chegou ao fim do comando).
+ *
+ * IMPORTANTE: o scan começa em `from`, para que o chamador possa CONTINUAR a
+ * busca. Sem isso, um "rm -rf /home" no começo do comando faria o scan parar no
+ * primeiro casamento e o "rm -rf /" logo depois passaria batido.
+ */
+static int neuro_pc_guard_scan(const char *code, const char *pattern,
+                                char *win, size_t win_cap, size_t *wlen, int *sp,
+                                char *after, const char *from) {
+    size_t plen = strlen(pattern);
+    if (plen == 0 || plen + 1 > win_cap) return 0;
+    *after = '\0';
+    const char *start = from ? from : code;
+    for (const char *p = start; *p; p++) {
+        char c = neuro_pc_lower(*p);
+        if (neuro_pc_is_space(c)) {
+            if (*sp) continue;          /* colapsa espacos repetidos */
+            c = ' ';                    /* normaliza \t \n \r para ' ' */
+            *sp = 1;
+        } else {
+            *sp = 0;
+        }
+        /* desloca a janela */
+        if (*wlen + 1 < win_cap) {
+            win[(*wlen)++] = c;
+        } else {
+            memmove(win, win + 1, *wlen - 1);
+            win[*wlen - 1] = c;
+        }
+        if (*wlen >= plen && memcmp(win + (*wlen - plen), pattern, plen) == 0) {
+            *after = neuro_pc_lower(p[1]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Procura a primeira ocorrência do padrão que satisfaz a regra, varrendo TODAS
+ * as ocorrências (não só a primeira).
+ */
+static int neuro_pc_guard_find(const char *code, const neuro_pc_guard_rule_t *rule,
+                                char *after) {
+    char win[NEURO_PC_GUARD_MAX_PATTERN + 1];
+    const char *from = code;
+    *after = '\0';
+    for (;;) {
+        size_t wlen = 0;
+        int sp = 0;
+        char a = '\0';
+        if (!neuro_pc_guard_scan(code, rule->pattern, win, sizeof(win), &wlen, &sp, &a, from)) {
+            return 0;
+        }
+        if (!rule->match_prefix || neuro_pc_after_is_separator(a)) {
+            *after = a;
+            return 1;
+        }
+        /* esta ocorrencia nao viola (ex.: "rm -rf /home"); procura a proxima.
+         * avanca 1 caractere DEPOIS do inicio do casamento atual. */
+        from += (size_t)(from - code) + 1;
+    }
+}
+
+/*
+ * Variante para o padrão da fork bomb, que CONTEM separadores internos
+ * (':' '&' ';') e por isso nao sobrevive a normalizacao de espacos.
+ * Casa no texto bruto, sem espacos.
+ */
+static int neuro_pc_guard_scan_nospace(const char *code, const char *pattern) {
+    size_t plen = strlen(pattern);
+    if (plen == 0) return 0;
+    size_t k = 0; /* chars do comando ate agora, sem espacos */
+    size_t l = 0; /* chars do padrao ate agora */
+    const char *p = code;
+    for (; *p; p++) {
+        char c = *p;
+        if (neuro_pc_is_space(c)) continue;
+        if (c == neuro_pc_lower(pattern[l])) {
+            l++;
+            if (l == plen) return 1;
+        } else {
+            /* volta ao inicio: re Casa o padrao (KMP simples, padroes curtos) */
+            l = (c == neuro_pc_lower(pattern[0])) ? 1 : 0;
+        }
+        k++;
+    }
+    (void)k;
+    return 0;
+}
+
+/*
+ * Devolve 0 se o comando e permitido, ou NEURO_PC_FAULT_GUARD se violou uma
+ * regra. Nao aloca memoria. Nao trunca o comando.
+ */
+int lupin_neuro_pc_guard_check(const char *code) {
+    if (!code || !*code) return 0;
+
+    for (size_t r = 0; r < NEURO_PC_GUARD_RULE_COUNT; r++) {
+        const neuro_pc_guard_rule_t *rule = &NEURO_PC_GUARD_RULES[r];
+        char after = '\0';
+        if (strcmp(rule->rule, "no_fork_bomb") == 0) {
+            if (neuro_pc_guard_scan_nospace(code, rule->pattern)) {
+                return NEURO_PC_FAULT_GUARD;
+            }
+            continue;
+        }
+        if (neuro_pc_guard_find(code, rule, &after)) {
+            return NEURO_PC_FAULT_GUARD;
+        }
+    }
+    return 0;
+}
+
+/* Devolve a mensagem da regra violada (ou NULL se nenhuma violou). */
+const char *lupin_neuro_pc_guard_message(const char *code) {
+    if (!code || !*code) return NULL;
+    for (size_t r = 0; r < NEURO_PC_GUARD_RULE_COUNT; r++) {
+        const neuro_pc_guard_rule_t *rule = &NEURO_PC_GUARD_RULES[r];
+        char after = '\0';
+        if (strcmp(rule->rule, "no_fork_bomb") == 0) {
+            if (neuro_pc_guard_scan_nospace(code, rule->pattern)) return rule->message;
+            continue;
+        }
+        if (neuro_pc_guard_find(code, rule, &after)) return rule->message;
+    }
+    return NULL;
+}
+
+/* Devolve o nome da regra violada (ou NULL). Usado pela rota HTTP do daemon. */
+const char *lupin_neuro_pc_guard_rule(const char *code) {
+    if (!code || !*code) return NULL;
+    for (size_t r = 0; r < NEURO_PC_GUARD_RULE_COUNT; r++) {
+        const neuro_pc_guard_rule_t *rule = &NEURO_PC_GUARD_RULES[r];
+        char after = '\0';
+        if (strcmp(rule->rule, "no_fork_bomb") == 0) {
+            if (neuro_pc_guard_scan_nospace(code, rule->pattern)) return rule->rule;
+            continue;
+        }
+        if (neuro_pc_guard_find(code, rule, &after)) return rule->rule;
+    }
+    return NULL;
+}
+
+
 int lupin_neuro_pc_run_script(neuro_pc_state_t *pc, const char *code, char *out_buf, size_t out_max) {
     if (!pc || !code || !out_buf || out_max == 0) return -1;
     out_buf[0] = '\0';
+
+    /* O Guard (L1) roda ANTES de qualquer execucao: se o comando viola a
+     * politica soberana do no, nada e compilado nem executado. */
+    int guard_res = lupin_neuro_pc_guard_check(code);
+    if (guard_res > 0) {
+        pc->fault = guard_res;
+        const char *msg = lupin_neuro_pc_guard_message(code);
+        if (msg) {
+            snprintf(pc->stdout_buf, sizeof(pc->stdout_buf), "%s", msg);
+            snprintf(out_buf, out_max, "%s", msg);
+        }
+        return -1;
+    }
 
     /* mkstemp substitui o XXXXXX no buffer; os caminhos definitivos saem
      * de snprintf (o template do mkstemp nao pode ter sufixo depois do XXXXXX). */
@@ -585,7 +824,8 @@ int lupin_neuro_pc_run_script(neuro_pc_state_t *pc, const char *code, char *out_
 
 const char *lupin_neuro_pc_fault_name(int fault) {
     static const char *names[] = {"illegal", "ebreak", "misaligned load", "misaligned store",
-                                  "load out of range", "store out of range", "bad jump", "ecall"};
+                                  "load out of range", "store out of range", "bad jump", "ecall",
+                                  "guard"};
     if (fault < 0 || fault > 7) return "none";
     return names[fault];
 }
