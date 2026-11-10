@@ -510,7 +510,13 @@ fn handle_client(mut stream: TcpStream, state: &Arc<AppState>) {
             let body = format!("{{\"status\":\"online\",\"npu\":\"hexagon-780\",\"npu_socket\":{},\"model_loaded\":{},\"mode\":\"{}\"}}\n", npu_socket_exists, model_loaded, mode);
             let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
             let _ = stream.write_all(response.as_bytes());
-        } else if req.starts_with("GET /metrics") {
+                } else if req.starts_with("POST /pc/run") {
+            handle_pc_run(stream, &req);
+        } else if req.starts_with("GET /pc/status") {
+            handle_pc_status(stream);
+        } else if req.starts_with("POST /pc/reset") {
+            handle_pc_reset(stream);
+} else if req.starts_with("GET /metrics") {
             let total = state.total_inferences.load(Ordering::Relaxed);
             let telem = crate::telemetry::SiliconTelemetry::collect();
             let body = format!(
@@ -840,3 +846,66 @@ mod tests {
         assert!(post_json.contains("\"lens\":"));
     }
 }
+fn handle_pc_run(mut stream: std::net::TcpStream, request_body: &str) {
+    if let Some(start) = request_body.find(r#""code":"#) {
+        let after_code = &request_body[start + 7..]; // after "code":
+        let mut extracted_code = String::new();
+        let mut in_quotes = false;
+        let mut iter = after_code.chars().peekable();
+        while let Some(c) = iter.next() {
+            if c == ' ' || c == '\n' || c == '\r' {
+                if !in_quotes {
+                    continue;
+                }
+            }
+            if c == '"' {
+                if !in_quotes {
+                    in_quotes = true;
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            if in_quotes {
+                extracted_code.push(c);
+            }
+        }
+        
+        let output = std::process::Command::new("./build/lupin-pc")
+            .arg("run")
+            .arg(&extracted_code)
+            .output();
+        
+        if let Ok(out) = output {
+            let res_str = String::from_utf8_lossy(&out.stdout);
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}", res_str);
+            let _ = stream.write_all(response.as_bytes());
+            return;
+        }
+    }
+    
+    let err_response = "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{\"error\": \"invalid code\"}";
+    let _ = stream.write_all(err_response.as_bytes());
+}
+
+fn handle_pc_status(mut stream: std::net::TcpStream) {
+    let output = std::process::Command::new("./build/lupin-pc")
+        .arg("status")
+        .output();
+        
+    if let Ok(out) = output {
+        let res_str = String::from_utf8_lossy(&out.stdout);
+        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}", res_str);
+        let _ = stream.write_all(response.as_bytes());
+    } else {
+        let err_response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{\"error\": \"exec failed\"}";
+        let _ = stream.write_all(err_response.as_bytes());
+    }
+}
+
+fn handle_pc_reset(mut stream: std::net::TcpStream) {
+    let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"status\": \"reset_ok\"}";
+    let _ = stream.write_all(response.as_bytes());
+}
+
+
