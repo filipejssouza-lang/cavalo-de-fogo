@@ -100,6 +100,10 @@ typedef struct {
     uint8_t *drom;               /* 128 KB */
     uint32_t *rom;               /* 65536 palavras */
     neuro_pc_store_t store;      /* o store vive DENTRO do estado */
+    /* Digit file (Fase 2.5, custom-0 0x0B / custom-1 0x2B — ref.py Machine.digit_op):
+     * 8 registradores d0..d7 de 128 dígitos decimais, índice 0 = menos significativo.
+     * Uops 64..69: BMAC, BMSB, BLD, BGET, BPRD, BSCAN. */
+    uint8_t bn[8][128];
 } neuro_pc_state_t;
 
 int lupin_neuro_pc_init(neuro_pc_state_t *pc, size_t ram_size_bytes);

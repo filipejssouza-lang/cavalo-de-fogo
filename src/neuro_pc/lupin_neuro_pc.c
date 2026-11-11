@@ -92,6 +92,7 @@ void lupin_neuro_pc_reset(neuro_pc_state_t *pc) {
     if (pc->rom) memset(pc->rom, 0, NEURO_PC_ROM_BYTES);
     /* O reset limpa o store: o estado e recomecado do zero. */
     memset(&pc->store, 0, sizeof(pc->store));
+    memset(pc->bn, 0, sizeof(pc->bn));
 }
 
 void lupin_neuro_pc_free(neuro_pc_state_t *pc) {
@@ -274,6 +275,55 @@ static void do_fault(neuro_pc_state_t *pc, int cause, uint32_t pc_addr) {
     pc->fault_pc = pc_addr;
 }
 
+/* --- digit file (Fase 2.5) ---
+ * Espelho de ref.py Machine.digit_op (a forma do circuito). O Rv32 plano do
+ * ref.py NAO implementa estas ops; a spec e a docstring do ref.py (l. 30-48).
+ * Os ops de linha e o BSCAN enderecam a RAM modulo 32 KB: mem8[ea & 0x7FFF]. */
+static uint8_t bn_ram_byte(const neuro_pc_state_t *pc, uint32_t ea) {
+    return pc->ram[ea & 0x7FFFu];
+}
+
+/* f3: 0 BMAC, 1 BMSB, 2 BLD, 3 BGET, 4 BSCAN. a = x[rs1], b = x[rs2] (o word de operandos
+ * dD | dS << 3 | ovw << 6 | n << 7 | off << 13 | m << 20). Devolve o valor de rd. */
+static uint32_t bn_op(neuro_pc_state_t *pc, uint32_t f3, uint32_t a, uint32_t b) {
+    uint8_t (*f)[128] = pc->bn;
+    if (f3 == 4) { /* BSCAN: dígitos ASCII consecutivos a partir de a (no máximo 63) */
+        uint32_t n = 0;
+        while (n < 63) {
+            uint8_t ch = bn_ram_byte(pc, a + n);
+            if (ch < '0' || ch > '9') break;
+            n++;
+        }
+        return n;
+    }
+    uint32_t dd = b & 7u, ds = (b >> 3) & 7u, ovw = (b >> 6) & 1u;
+    uint32_t n = (b >> 7) & 63u, off = (b >> 13) & 127u, m = (b >> 20) & 15u;
+    if (m > 9) m = 9;
+    if (f3 == 3) return f[dd][off]; /* BGET */
+
+    int c = 0; /* carry (BMAC) / borrow (BMSB); BLD sempre 0 */
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t r = i + off;
+        int d = (r < 128) ? f[dd][r] : 0; /* linhas > 127 leem 0 e não são escritas */
+        int v;
+        if (f3 == 2) { /* BLD: dígitos ASCII terminando em a - 1, o menos significativo por último */
+            v = bn_ram_byte(pc, a - 1u - i) & 15;
+            if (v > 9) v = 9;
+            c = 0;
+        } else if (f3 == 0) { /* BMAC */
+            v = (ovw ? 0 : d) + f[ds][i] * (int)m + c;
+            c = v / 10;
+            v %= 10;
+        } else { /* BMSB: módulo e borrow com semântica de Python (floor) */
+            int t = d - f[ds][i] * (int)m - c;
+            v = ((t % 10) + 10) % 10;
+            c = (v - t) / 10;
+        }
+        if (r < 128) f[dd][r] = (uint8_t)v;
+    }
+    return (uint32_t)c;
+}
+
 int lupin_neuro_pc_step(neuro_pc_state_t *pc, uint32_t max_cycles) {
     if (!pc || pc->halted) return -1;
     uint32_t executed = 0;
@@ -427,6 +477,15 @@ int lupin_neuro_pc_step(neuro_pc_state_t *pc, uint32_t max_cycles) {
             } else {
                 do_fault(pc, NEURO_PC_FAULT_ILLEGAL, cur);
             }
+            break;
+        case 0x0B: /* custom-0 (R-type, funct7 = 0): BMAC / BMSB / BLD / BGET / BSCAN */
+            if (f3 > 4 || f7 != 0) { do_fault(pc, NEURO_PC_FAULT_ILLEGAL, cur); break; }
+            res = bn_op(pc, f3, a, b);
+            break;
+        case 0x2B: /* custom-1 (I-type): BPRD — putchar('0' + d[rd & 7][imm[6:0]]) */
+            if (f3 != 0) { do_fault(pc, NEURO_PC_FAULT_ILLEGAL, cur); break; }
+            put_char(pc, (uint8_t)('0' + pc->bn[rd & 7u][(word >> 20) & 0x7Fu]));
+            writes_rd = 0; /* o campo rd é o seletor do registrador de dígitos */
             break;
         default:
             do_fault(pc, NEURO_PC_FAULT_ILLEGAL, cur);

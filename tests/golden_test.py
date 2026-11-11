@@ -188,6 +188,146 @@ int main(void) {
 }
 
 
+# ---------------------------------------------------------------------------
+# Programas do DIGIT FILE (Fase 2.5 — bignum, uops 64..69).
+#
+# Usam as custom ops do Qwenputer (custom-0 = 0x0B, custom-1 = 0x2B), que o
+# QEMU NÃO conhece (seria SIGILL). Por isso a paridade aqui é:
+#
+#     ref.py (Machine.digit_op — a spec)  ≡  motor C  ≡  oráculo Python (int)
+#
+# O oráculo é independente dos dois motores: Python bigint calcula o resultado
+# esperado da aritmética. Quando o oráculo é None, vale só ref.py ≡ motor C
+# (casos de borda cuja semântica é a própria spec: linhas > 127, clamp de m...).
+#
+# Spec: chipformer/rv/ref.py, docstring (l. 30-48) e Machine.digit_op (l. 555+).
+# ATENÇÃO: o Rv32 (emulador plano) NÃO implementa o digit file — só o Machine.
+# ---------------------------------------------------------------------------
+
+BN_A = "12345678901234567890123456789"          # 29 dígitos
+BN_B = "98765432109876543210987654321"          # 29 dígitos
+BN_M1 = "31415926535897932384"                  # 20 dígitos
+BN_M2 = "271828182845904523"                    # 18 dígitos
+
+_BN_PR = r'''
+#include "rt.h"
+#include "bn.h"
+static void pr(int r, int len) {          /* imprime via BGET, mais significativo primeiro */
+    for (int i = len - 1; i >= 0; i--) rv_putchar('0' + bn_get(BN_OPS(0, i, 0, r, 0, 0)));
+    rv_putchar('\n');
+}
+'''
+
+
+def _bn_expected_add() -> tuple[str, int]:
+    n = max(len(BN_A), len(BN_B))
+    s = int(BN_A) + int(BN_B)
+    digits = str(s).zfill(n + 1)
+    return f"{digits}\n0\n", len(BN_A)
+
+
+def _bn_expected_mul() -> tuple[str, int]:
+    p = int(BN_M1) * int(BN_M2)
+    return str(p).zfill(len(BN_M1) + len(BN_M2)) + "\n", 0
+
+
+def _bn_expected_sub() -> tuple[str, int]:
+    n = len(BN_B)
+    d1 = str(int(BN_B) - int(BN_A)).zfill(n)                 # B - A, sem borrow
+    d2 = str(10 ** n + int(BN_A) - int(BN_B)).zfill(n)        # A - B em complemento de 10
+    return f"{d1}\n0\n{d2}\n1\n", 0
+
+
+BIGNUM_PROGRAMS = {
+    # BSCAN + BLD + BMAC(m=1) + BGET. Exit code = BSCAN(A).
+    "bn_add": (_BN_PR + r'''
+static char A[] = "%s";
+static char B[] = "%s";
+int main(void) {
+    int la = bn_scan(A), lb = bn_scan(B);
+    bn_ld(A + la, BN_OPS(la, 0, 0, 0, 0, 0));
+    bn_ld(B + lb, BN_OPS(lb, 0, 0, 1, 0, 0));
+    int n = la > lb ? la : lb;
+    uint32_t c = bn_mac(BN_OPS(n + 1, 0, 1, 0, 1, 0));   /* d0 += d1 (+1 dígito absorve o carry) */
+    pr(0, n + 1);
+    rv_putchar('0' + c); rv_putchar('\n');
+    return la;
+}
+''' % (BN_A, BN_B), _bn_expected_add),
+
+    # Multiplicação escolar: uma linha BMAC por dígito do multiplicador (m = dígito, off = j),
+    # com o registro destino zerado por BMAC ovw (m = 0). É o que o firmware calc faz.
+    "bn_mul": (_BN_PR + r'''
+static char A[] = "%s";
+static char B[] = "%s";
+int main(void) {
+    int la = bn_scan(A), lb = bn_scan(B);
+    bn_ld(A + la, BN_OPS(la, 0, 0, 0, 0, 0));
+    bn_ld(B + lb, BN_OPS(lb, 0, 0, 1, 0, 0));
+    bn_mac(BN_OPS(63, 0, 0, 2, 2, 1));                    /* d2 = 0 (ovw, m = 0) */
+    for (int j = 0; j < lb; j++) {
+        uint32_t m = bn_get(BN_OPS(0, j, 0, 1, 0, 0));
+        bn_mac(BN_OPS(la + 1, j, m, 2, 0, 0));            /* d2[j..] += d0 * m */
+    }
+    pr(2, la + lb);
+    return 0;
+}
+''' % (BN_M1, BN_M2), _bn_expected_mul),
+
+    # BMSB(m=1): B - A sem borrow; depois A - B com borrow final = 1 (complemento de 10).
+    "bn_sub": (_BN_PR + r'''
+static char A[] = "%s";
+static char B[] = "%s";
+int main(void) {
+    int la = bn_scan(A), lb = bn_scan(B);
+    bn_ld(B + lb, BN_OPS(lb, 0, 0, 0, 0, 0));
+    bn_ld(A + la, BN_OPS(la, 0, 0, 1, 0, 0));
+    uint32_t b = bn_msb(BN_OPS(lb, 0, 1, 0, 1, 0));       /* d0 = B - A */
+    pr(0, lb); rv_putchar('0' + b); rv_putchar('\n');
+    bn_ld(A + la, BN_OPS(la, 0, 0, 3, 0, 0));
+    bn_ld(B + lb, BN_OPS(lb, 0, 0, 4, 0, 0));
+    b = bn_msb(BN_OPS(la, 0, 1, 3, 4, 0));                /* d3 = A - B (borrow) */
+    pr(3, la); rv_putchar('0' + b); rv_putchar('\n');
+    return 0;
+}
+''' % (BN_A, BN_B), _bn_expected_sub),
+
+    # Bordas da spec (oráculo = ref.py): clamp m > 9, linhas > 127 (lidas como 0, não
+    # escritas, mas o carry continua), BMSB com m = 9, BPRD com dD = rd & 7 e k = 127,
+    # BSCAN parando em não-dígito, ovw ignorando o destino.
+    "bn_edge": (_BN_PR + r'''
+static char S[] = "7";
+static char T[] = "9876543210";
+static char U[] = "123x45";
+static char V[] = "1:?";                              /* & 15 = 1, 10, 15 -> clamp 9 */
+#define BPRD(rd, k) __asm__ volatile(".insn i 0x2B, 0, " #rd ", x0, " #k ::: "memory")
+int main(void) {
+    bn_ld(S + 1, BN_OPS(1, 0, 0, 0, 0, 0));               /* d0 = 7 */
+    bn_mac(BN_OPS(3, 0, 15, 3, 0, 1));                    /* d3 = 7 * min(15, 9) = 63 */
+    pr(3, 3);
+    bn_ld(T + 10, BN_OPS(10, 120, 0, 4, 0, 0));           /* d4[120..127] = 0..7 (128, 129 perdidos) */
+    for (int i = 127; i >= 120; i--) rv_putchar('0' + bn_get(BN_OPS(0, i, 0, 4, 0, 0)));
+    rv_putchar('\n');
+    bn_ld(T + 10, BN_OPS(10, 0, 0, 5, 0, 0));             /* d5 = 9876543210 */
+    uint32_t c = bn_mac(BN_OPS(10, 122, 9, 4, 5, 0));     /* d4[122..131] += d5 * 9 */
+    for (int i = 127; i >= 118; i--) rv_putchar('0' + bn_get(BN_OPS(0, i, 0, 4, 0, 0)));
+    rv_putchar(':'); rv_putchar('0' + c); rv_putchar('\n');
+    pr(4, 4);                                             /* d4[0..3] = 0: nada deu a volta em 128 */
+    uint32_t b = bn_msb(BN_OPS(10, 0, 9, 0, 5, 0));       /* d0 = 7 - 9876543210 * 9 */
+    pr(0, 12); rv_putchar('0' + b); rv_putchar('\n');
+    BPRD(x12, 127); BPRD(x4, 120); BPRD(x3, 1); BPRD(x11, 0);   /* x12 & 7 = 4, x11 & 7 = 3 */
+    rv_putchar('\n');
+    uint32_t n = bn_scan(U);
+    bn_mac(BN_OPS(5, 0, 1, 6, 5, 1));                     /* ovw: d6 = d5 (destino ignorado) */
+    pr(6, 5);
+    bn_ld(V + 3, BN_OPS(3, 0, 0, 7, 0, 0));               /* BLD clamp: d7 = 1 9 9 */
+    pr(7, 3);
+    return (int)n;
+}
+''', None),
+}
+
+
 def build(name: str, src: str, ld: str, out: Path, qemu: bool) -> bool:
     """Compila o programa com o mapa pedido. Retorna False em falha.
 
@@ -198,6 +338,8 @@ def build(name: str, src: str, ld: str, out: Path, qemu: bool) -> bool:
     with tempfile.TemporaryDirectory() as td:
         cfile = Path(td) / "prog.c"
         extra = ["-DQEMU"] if qemu else []
+        if name in BIGNUM_PROGRAMS:
+            extra.append("-ffreestanding")  # stdint.h do próprio gcc (sem sysroot rv32)
         cfile.write_text(src)
         exit_src = Path(td) / "exit.c"
         exit_src.write_text(
@@ -205,7 +347,7 @@ def build(name: str, src: str, ld: str, out: Path, qemu: bool) -> bool:
             'void exit(int code) { for (;;) rv_ecall2(93, code, 0, 0); }\n'
         )
         cmd = [CROSS_CC, "-march=rv32im", "-mabi=ilp32", "-nostdlib", "-nostartfiles",
-               "-static", "-O2", *extra, f"-I{RV_ENV}", "-T", str(ld),
+               "-static", "-O2", *extra, f"-I{RV_ENV}", f"-I{RV_ENV / 'calc'}", "-T", str(ld),
                "-o", str(out), str(RV_ENV / "crt0.S"), str(exit_src), str(cfile)]
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
@@ -269,11 +411,35 @@ def main() -> int:
         print(f"ERRO: {cbin} não existe. Rode: make build/lupin-pc")
         return 2
 
-    names = [args.only] if args.only else list(PROGRAMS)
+    names = [args.only] if args.only else list(PROGRAMS) + list(BIGNUM_PROGRAMS)
     failures = []
     print(f"Golden test: QEMU × ref.py × motor C   ({len(names)} programas)\n")
 
     for name in names:
+        if name in BIGNUM_PROGRAMS:
+            src, oracle = BIGNUM_PROGRAMS[name]
+            with tempfile.TemporaryDirectory() as td:
+                rom_elf = Path(td) / "rom.elf"
+                if not build(name, src, RV_ENV / "rom.ld", rom_elf, qemu=False):
+                    failures.append((name, "build-rom"))
+                    continue
+                r_out, r_rc, r_err = run_ref(rom_elf)
+                c_out, c_rc, c_cyc = run_c(rom_elf)
+            ok = (r_out == c_out) and (r_rc == c_rc) and not r_err.strip()
+            o_txt = "spec"
+            if oracle is not None:
+                o_out, o_rc = oracle()
+                ok = ok and (r_out == o_out) and (r_rc == o_rc)
+                o_txt = "int"
+            mark = "OK  " if ok else "FAIL"
+            print(f"  [{mark}] {name:16s} ref={r_rc} c={c_rc} oráculo={o_txt}  "
+                  f"out={c_out!r}")
+            if not ok:
+                exp = f" oráculo={oracle()!r}" if oracle else ""
+                failures.append((name, f"ref={r_out!r}/{r_rc} c={c_out!r}/{c_rc}{exp}"))
+                if r_err:
+                    print(f"         ref stderr: {r_err[:300]}")
+            continue
         src = PROGRAMS[name]
         with tempfile.TemporaryDirectory() as td:
             td = Path(td)
