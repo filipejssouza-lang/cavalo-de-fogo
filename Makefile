@@ -9,8 +9,8 @@ else
     STATIC ?=
 endif
 
-CFLAGS = -O3 $(STATIC) $(ARCH_FLAGS) -ffast-math -Wall
-LDFLAGS = $(STATIC) -lm -lpthread -ldl
+CFLAGS ?= -O3 $(STATIC) $(ARCH_FLAGS) -ffast-math -Wall
+LDFLAGS ?= $(STATIC) -lm -lpthread -ldl
 DRM_FLAGS = -I/usr/include/libdrm -ldrm
 
 SRC_CPU = src/cpu/neon_kernels.c src/cpu/governor_control.c
