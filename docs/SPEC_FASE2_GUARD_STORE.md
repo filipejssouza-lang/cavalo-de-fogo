@@ -6,7 +6,7 @@
 > **Escopo estrito e delimitado.** O trabalho tem três partes independentes (Guard, Store,
 > Endpoints) e uma de testes. **Não refatore o que já existe.** O motor RV32IM passou por uma
 > auditoria e tem paridade bit-a-bit com o QEMU e com o `ref.py` do Qwenputer
-> (`tests/golden_test.py`, 14/14). **Qualquer mudança no motor que-break esse teste é
+> (`tests/golden_test.py`, 18/18). **Qualquer mudança no motor que-break esse teste é
 > proibida.**
 
 ---
@@ -19,7 +19,7 @@
 | `src/neuro_pc/lupin_neuro_pc.c` | Motor RV32IM + Zba real, mapa de memória do circuito (RAM 32 KB em `0x0`, DROM 128 KB em `0x20000`, ROM 256 KB em `0x40000`), parser ELF32, ECALL putchar/exit/write |
 | `src/neuro_pc/lupin_pc_cli.c` | CLI: `status`, `run <código-C>`, `elf <arquivo.elf>` — saída em JSON |
 | `tests/test_neuro_pc.c` | **8 testes unitários, todos verdes.** Não podem quebrar. |
-| `tests/golden_test.py` | **Golden test de 3 motores** (QEMU × `ref.py` do Qwenputer × motor C) na mesma imagem ELF, exigindo stdout + exit code idênticos. **14/14 verdes.** Não pode quebrar. |
+| `tests/golden_test.py` | **Golden test de 3 motores** (QEMU × `ref.py` do Qwenputer × motor C) na mesma imagem ELF, exigindo stdout + exit code idênticos. **18/18 verdes.** Não pode quebrar. |
 
 O enum de faults atual (`lupin_neuro_pc.h`) tem 8 valores (`0..7`) e `NEURO_PC_OK = -1`, com
 `lupin_neuro_pc_fault_name()` indexando um array de 8 strings **na mesma ordem**. Ao adicionar
@@ -368,7 +368,7 @@ Tudo isto tem que ser verdade:
 
 - [ ] `make build/lupin-pc build/test_neuro_pc` compila **sem warning novo**
 - [ ] `./build/test_neuro_pc` → **todos os testes passam**, incluindo os 8 originais
-- [ ] `python3 tests/golden_test.py` → **14/14**, `PARIDADE TOTAL`
+- [ ] `python3 tests/golden_test.py` → **18/18**, `PARIDADE TOTAL`
 - [ ] `cargo build --release` em `crates/lupinos-daemon/` compila sem erro
 - [ ] `NEURO_PC_FAULT_GUARD` tem valor **8** e `"guard"` é a 9ª string de
       `lupin_neuro_pc_fault_name()`

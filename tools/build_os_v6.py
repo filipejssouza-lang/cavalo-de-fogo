@@ -10,6 +10,8 @@ Arquitetura Soberana "Soberania Autônoma" (Snapdragon 888 - Xiaomi Mi 11 Ultra)
     * /system/bin/lupin-power (Governador fino de CPU Cortex-X1 @ 2.84 GHz)
     * /system/bin/lupinctl (CLI do Plano de Controle do Lupin OS)
     * /system/bin/lupin_slot_ctl (Boot A/B com verificação SHA-256 e rollback automático)
+    * /opt/lupinos/lupin-pc (MOTOR do Neuro-PC: emulador RV32IM+Zba — caminho na lista
+      de busca do daemon Rust, crates/lupinos-daemon/src/main.rs:824-833)
 - Geração de imagem Android Boot v3 assinada com AVB 2.0 (192 MB exatos) para o Slot B.
 =============================================================================
 """
@@ -63,7 +65,7 @@ def extract_kernel_and_ramdisk(orig_img_path, work_dir):
     print(f"[+] Ramdisk extraído: {r_sz} bytes -> {ramdisk_file}")
     return kernel_file, ramdisk_file, cmdline
 
-def purge_twrp_and_inject_v6(ramdisk_gz_path, guardian_bin, hud_bin, power_bin, lupinctl_bin, slot_ctl_bin, work_dir):
+def purge_twrp_and_inject_v6(ramdisk_gz_path, guardian_bin, hud_bin, power_bin, lupinctl_bin, slot_ctl_bin, work_dir, neuro_pc_bin=None):
     print("[*] Desempacotando ramdisk para purga completa do TWRP e injeção do Lupin OS v6...")
     ramdisk_root = os.path.join(work_dir, "ramdisk_root")
     os.makedirs(ramdisk_root, exist_ok=True)
@@ -154,6 +156,18 @@ def purge_twrp_and_inject_v6(ramdisk_gz_path, guardian_bin, hud_bin, power_bin, 
             shutil.copy2(cam_tool, dest_cam)
             os.chmod(dest_cam, 0o755)
             print(f"[+] Módulo de câmera soberano injetado: {dest_cam}")
+
+    # 8c. Injeta o MOTOR do Neuro-PC (lupin-pc — emulador RV32IM+Zba).
+    # Caminho /opt/lupinos/ é o 2º da lista de busca do daemon Rust
+    # (crates/lupinos-daemon/src/main.rs:824-833), então o daemon acha o motor
+    # sem depender do CWD. Sem isto, a imagem de boot subia sem o motor.
+    if neuro_pc_bin and os.path.exists(neuro_pc_bin):
+        opt_dir = os.path.join(ramdisk_root, "opt", "lupinos")
+        os.makedirs(opt_dir, exist_ok=True)
+        dest_pc = os.path.join(opt_dir, "lupin-pc")
+        shutil.copy2(neuro_pc_bin, dest_pc)
+        os.chmod(dest_pc, 0o755)
+        print(f"[+] Motor do Neuro-PC (lupin-pc RV32IM+Zba) injetado: {dest_pc}")
 
     # 9. Redireciona /system/bin/recovery para /sbin/lupinos_guard
     rec_symlink = os.path.join(sys_bin, "recovery")
@@ -298,6 +312,8 @@ def main():
     parser.add_argument("--power", help="Binário lupin-power", default="build/lupin-power")
     parser.add_argument("--lupinctl", help="Binário lupinctl", default="build/lupinctl")
     parser.add_argument("--slot-ctl", help="Binário lupin_slot_ctl", default="build/lupin_slot_ctl")
+    parser.add_argument("--neuro-pc", help="Motor do Neuro-PC (lupin-pc, emulador RV32IM+Zba)",
+                        default="build/lupin-pc")
     parser.add_argument("--out", help="Imagem assinada final v6", default="lupin_baremetal_star_v6_sovereign.img")
     args = parser.parse_args()
     
@@ -310,7 +326,8 @@ def main():
             args.power,
             args.lupinctl,
             args.slot_ctl,
-            work_dir
+            work_dir,
+            args.neuro_pc
         )
         assemble_and_sign_boot_v6(kernel_file, new_ramdisk, args.out, cmdline)
 

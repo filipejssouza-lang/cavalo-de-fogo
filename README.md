@@ -8,6 +8,35 @@
 
 ---
 
+## 🗺️ O QUE É O QUÊ (os nomes são o MESMO PROJETO)
+
+Este repositório é **o Fenrir**. Os nomes designam **camadas**, não projetos diferentes:
+
+| Nome | Camada | Onde |
+|---|---|---|
+| **Fenrir** | o **nó** (Mi 11 Ultra, SD888, `192.168.1.9`, ssh `2222`) | a bancada |
+| **Lupin OS v6** | o **SO bare-metal** que roda nele | este repo → `lupin_baremetal_star_v6_sovereign.img` |
+| **Cavalo de Fogo** | o **repo/projeto** do SO | este repo |
+| **Neuro-PC** (`lupin-pc`) | o **motor**: emulador RV32IM+Zba que executa os ELFs do guest | `src/neuro_pc/` → `build/lupin-pc` |
+| **Neuro-OS** | o **computador em pesos** em cima do motor: Qwenputer/QwenPU + **Lupin-Guard** fundido nos pesos | `~/lupin-neuro-os/` |
+
+**O pipeline completo:**
+
+```
+Qwen3.5-4B-CHIP8 (28 GB, guard fundido na Camada 1)
+  └─ NPU Hexagon 780 via FastRPC (/dev/msm_fastrpc-2)   [crates/lupinos-fastrpc]
+      └─ fallback llama.cpp :8080
+          └─ o modelo emite <tool_call> com programa RISC-V (uops do digit file)
+              └─ Lupin-PC (motor C AArch64) executa o programa RV32IM+Zba
+                  └─ Guard L1 (Camada 1) decide ALLOW/BLOCK (política do nó)
+                      └─ stdout volta ao modelo
+```
+
+> Estado real e medido: `~/.agents/memory/etapas_neuro_os.md`.
+> Visão de produto + auditoria contra o estado real: [`docs/visao/`](docs/visao/).
+
+---
+
 ## ⚡ O que é o Lupin OS v6?
 
 O **Lupin OS** é um sistema operacional bare-metal de alta performance projetado para transformar hardware mobile topo de linha em nós soberanos de inteligência artificial, computação heterogênea e telecomunicações edge, **eliminando 100% o overhead do Android**.
@@ -176,8 +205,43 @@ python3 tools/build_os_v6.py \
     --power bin/lupin-power \
     --lupinctl bin/lupinctl \
     --slot-ctl bin/lupin_slot_ctl \
+    --neuro-pc build/lupin-pc \
     --out lupin_baremetal_star_v6_sovereign.img
 ```
+> `--neuro-pc` injeta o motor do Neuro-PC em `/opt/lupinos/lupin-pc` — caminho na lista
+> de busca do daemon Rust, para a imagem subir **com** o motor Neuro-PC.
+
+### Deploy do Motor no Fenrir (caminho oficial):
+```bash
+bash ~/lupin-neuro-os/tools/deploy_fenrir.sh --test
+```
+Compila o motor C **nativamente** no Alpine do Fenrir (o cross-compiler fica no Mimir;
+o Fenrir executa), faz backup do binário anterior, instala em `/usr/local/bin/lupin-pc`
+e valida no silício real. **Resultado medido (2026-11-13):** bateria de 15 ELFs RV32IM
+com resultado **byte a byte idêntico** ao build x86_64 do Mimir.
+
+---
+
+## 🧠 Motor do Neuro-PC (`lupin-pc`) — o computador em pesos, executando RV32IM
+
+O motor C em `src/neuro_pc/` é o **emulador RV32IM+Zba** que executa os programas RISC-V
+emitidos pelo modelo de pesos. Ele é o que fecha o ciclo: o modelo não "fala" sobre
+computação — ele **chama** o computador e usa o resultado.
+
+* **ISA do guest:** RV32IM + Zba, com as **uops custom do digit file** (BMAC/BMSB/BLD/BGET/
+  BSCAN/BPRD) que dão ao computador em pesos aritmética de precisão arbitrária.
+* **Guard L1 (Camada 1):** filtro determinístico de política do nó, com **streaming** (janela
+  deslizante, sem buffer fixo) — o bug do truncamento em 2048 bytes foi corrigido e há teste
+  de regressão para ele (`test_guard_bypass_por_truncamento`).
+* **Lupin-Store (LPS1):** KV in-memory com snapshot binário assinado em FNV-1a 32-bit.
+* **Paridade bit-a-bit:** `tests/golden_test.py` compara **QEMU ≡ `ref.py` do Qwenputer ≡
+  motor C** na mesma imagem ELF (stdout + exit code + número de instruções).
+  **Estado medido: 18/18** — inclui os 4 casos de bignum (`bn_add`, `bn_mul`, `bn_sub`,
+  `bn_edge`).
+* **Testes do motor C:** `./build/test_neuro_pc` → **28/28** (8 de engine, 7 de guard,
+  13 de store).
+* **Rotas do daemon:** `POST /pc/run`, `GET /pc/status`, `POST /pc/reset`,
+  `POST /pc/store/{put,get,delete,list,count}` em `:8091`, e `lupinctl pc <status|run|elf>`.
 
 ---
 
