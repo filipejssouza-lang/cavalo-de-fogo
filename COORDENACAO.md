@@ -4,14 +4,29 @@
 > Ele está **versionado no repo** justamente para ser lido por qualquer agente que
 > chegue aqui. O espelho completo está em `~/.agents/memory/coordenacao_neuro_os.md`.
 
-## Estado atual (2026-11-10 18:30 BRT)
+## 🗺️ PRIMEIRO: os nomes são o MESMO PROJETO
+**Fenrir = Cavalo de Fogo = Lupin OS = Neuro-PC = Neuro-OS.**
+**Fenrir** = o nó (Mi 11 Ultra, `192.168.1.9`) · **Lupin OS v6** = o SO bare-metal que roda
+nele · **Cavalo de Fogo** = este repo · **Neuro-PC** (`lupin-pc`) = o motor RV32IM+Zba em
+`src/neuro_pc/` · **Neuro-OS** = o computador em pesos em cima do motor
+(Qwenputer/QwenPU + Lupin-Guard fundido nos pesos), em `~/lupin-neuro-os/`.
+
+## Estado atual (2026-11-13 09:40 BRT)
 
 | Frente | Dono | Estado |
 |---|---|---|
 | Motor RV32IM real (F1) | Orquestrador | ✅ `f5511fa` |
-| Guard (L1) + Store + endpoints (F2) | Orquestrador | ✅ **mergeado na master** `03a2cae` |
-| **Bignum ops (uops 64-69) + golden test cobrindo (F2.5)** | **Claude Code** | 🟡 em curso |
-| **Fase 3 — ponte real no Colab L4** | Orquestrador | ⬜ próximo passo |
+| Guard (L1) + Store + endpoints (F2) | Orquestrador | ✅ **mergeado na master** `03a2cae` — `audit_phase2.sh` **APROVADO tudo verde** |
+| **Bignum ops (uops 64-69) + golden test cobrindo (F2.5)** | Claude Code | ✅ **CONCLUÍDO** — `ac85dc7`, golden test **18/18** (inclui bn_add/bn_mul/bn_sub/bn_edge) |
+| **Port AArch64 do motor no Fenrir** | Orquestrador | ✅ **CONCLUÍDO 2026-11-13** — `lupin-pc` AArch64 instalado em `/usr/local/bin/lupin-pc` via `tools/deploy_fenrir.sh`; **15/15 idêntico** ao build x86_64 |
+| **Fase 3 — ponte real no Colab L4** | Orquestrador | ✅ **VALIDADO** (inferência real no checkpoint CHIP8) — o que falta é o **Guard in-weights** |
+| **Guard in-weights — entrega completa** | Orquestrador | 🔴 **ÚNICO GAP** — `tools/audit_delivery.py` = REPROVADO 3/8; faltam `guard/test_guard_q35.py`, `tests/test_acceptance.py`, `colab/build_neuro_os.py`, `colab/verify_neuro_os.py` (3 são CPU-only) |
+| F4 — UOP-64/ARM64 | — | ⬜ |
+| F5 — Automação Custo Zero | — | 🟡 |
+
+> **Causa do gap:** a sessão Jules `6167182409992609950` entregou mas **não deu push**.
+> Material preservado em `~/lupin-neuro-os/wip_sessao_6167182409992609950/`.
+> Spec do que falta: `~/lupin-neuro-os/docs/SPEC.md`.
 
 ## Regra de ouro
 
@@ -32,7 +47,13 @@ tests/golden_test.py
 ~/.agents/memory/        (estado_atual.md, diario_de_bordo.md)
 ```
 
-## O gap do bignum (F2.5) — o que precisa ser feito
+## O gap do bignum (F2.5) — RESOLVIDO em 2026-11-13, não refaça
+> ✅ **Fechado** pelo commit `ac85dc7` ("implementa digit file e bignum ops (uops 64-69) com
+> paridade 18/18"). O golden test subiu de 14/14 para **18/18** com os 4 casos novos
+> (bn_add, bn_mul, bn_sub, bn_edge), que exercitam de fato o digit file.
+> O texto abaixo é o **registro histórico** do gap — mantido para contexto.
+
+<details><summary>Registro histórico do gap (F2.5) — ler só por curiosidade</summary>
 
 O `ref.py` do Qwenputer implementa o **digit file**: 8 registradores `d0..d7` de 128
 dígitos decimais, com as instruções custom:
@@ -91,10 +112,12 @@ Ou seja: o golden test 14/14 hoje prova a paridade **no domínio coberto** (arit
 de 32 bits), e o domínio do Qwenputer é **justamente** o de precisão arbitrária. Sem
 as custom ops, a Fase 3 (merge real) entrega um computador que não calcula.
 
+</details>
+
 ## Numeração canônica das fases
 
-**F1** motor real ✅ · **F2** Guard+Store+endpoints ✅ · **F2.5** bignum 🟡 ·
-**F3** ponte real no Colab ⬜ · **F4** UOP-64/ARM64 ⬜
+**F1** motor real ✅ · **F2** Guard+Store+endpoints ✅ · **F2.5** bignum ✅ **18/18** ·
+**F3** ponte real no Colab ✅ (falta o Guard in-weights) · **F4** UOP-64/ARM64 ⬜
 
 A "Fase 2 = portar ref.py→C" do plano original foi **absorvida pela F1**.
 
