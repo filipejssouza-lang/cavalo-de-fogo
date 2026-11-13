@@ -44,6 +44,7 @@ Qwen3.5-4B-CHIP8 (28 GB, guard fundido na Camada 1)
 | Ponte real (inferência no Colab L4) | 🟢 validada — `62468 × 9558 = 597069144` | `~/lupin-neuro-os/colab_chip8_demo.py` |
 | Guard in-weights (circuito) | 🟡 implementado; oráculo **24/24**; **entrega incompleta** | `pytest ~/lupin-neuro-os/guard/test_guard_ref.py` |
 | `cargo build` das crates | 🟢 passa (1 warning `dead_code` em `get_active`) | `cargo build --manifest-path crates/lupinos-daemon/Cargo.toml` |
+| Testes do daemon Rust | 🟢 **10/10** | `cargo test --manifest-path crates/lupinos-daemon/Cargo.toml` |
 
 **O gap real e único:** a **entrega** do Guard in-weights. O circuito existe
 (`~/lupin-neuro-os/guard/lupin_guard_q35.py`, FSM de `slot_head` de chave endógena) e o
@@ -61,7 +62,7 @@ oráculo passa 24/24, mas faltam 4 arquivos — a sessão Jules entregou e **nã
 | `c195a04` | `COORDENACAO.md`: unifica os nomes + atualiza o estado das fases (F2.5 ✅ 18/18, F3 ✅ validada, port AArch64 ✅, gap único = guard in-weights). Marca o gap do bignum como **RESOLVIDO** (registro histórico mantido para contexto). |
 | `8400a17` | `Makefile`: `CFLAGS`/`LDFLAGS` de `=` para `?=` (permite sobrescrita para cross-compile). |
 | `ac85dc7` | `feat(neuro-pc)`: **digit file + bignum ops (uops 64-69)**, paridade 18/18. |
-| `c0f0f2a` | `tools/build_os_v6.py`: **injeta o motor `lupin-pc` na imagem de boot** (`/opt/lupinos/lupin-pc`) — antes a imagem subia **sem** o motor do Neuro-PC, embora o CI já o compilasse e o daemon Rust já o procurasse (`crates/lupinos-daemon/src/main.rs:824-833`). Novo flag `--neuro-pc`. |
+| `90755f3` | `tools/build_os_v6.py`: **injeta o motor `lupin-pc` na imagem de boot** (`/opt/lupinos/lupin-pc`) — antes a imagem subia **sem** o motor do Neuro-PC, embora o CI já o compilasse e o daemon Rust já o procurasse (`crates/lupinos-daemon/src/main.rs:824-833`). Novo flag `--neuro-pc`. Também: README (mapa de nomes, seção do motor, deploy oficial), `SPEC_FASE2` 14/14 → 18/18, e o arquivamento da visão + auditoria + este brief. |
 | `docs/visao/*` | Arquiva as 3 iterações da visão "Exocórtex Soberano v6" + a **auditoria contra o estado real** (`AUDITORIA_EXOCORTEX_2026-11-13.md`). |
 | `README.md` | Seção "O QUE É O QUÊ" (o mapa de nomes), seção do Motor do Neuro-PC, `--neuro-pc` na montagem, caminho oficial de deploy. |
 | `docs/SPEC_FASE2_GUARD_STORE.md` | `14/14` → `18/18` (3 lugares). |
